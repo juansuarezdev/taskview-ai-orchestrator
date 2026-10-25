@@ -4,7 +4,8 @@
 Tag a task (not `para-mí`, status Backlog/TODO) in a project board with:
   ia·plan      -> claude plans only (read-only), writes the plan into the task note, moves it to Review
   ia·ejecutar  -> claude implements it in its own git worktree/branch `ai/t<id>`, never pushes, moves it to Review
-Progress tags: ia·trabajando while running, then ia·plan-listo / ia·hecho / ia·fallo.
+Models: plan = Opus, exec = Sonnet, then an automatic review by Opus (ia·hecho if approved, ia·cambios if not).
+Progress tags: ia·trabajando while running, then ia·plan-listo / ia·hecho / ia·cambios / ia·fallo.
 One task at a time (flock). Run every minute from launchd. `--dry-run` only lists.
 """
 import fcntl, json, os, re, subprocess, sys, time, urllib.request
@@ -17,10 +18,11 @@ WORKTREES = CODE / ".ai-worktrees"
 LOG = HERE / "logs/ai-dispatch.log"
 REPOS = {"Board M": "repo-m", "Board G": "repo-g", "Board E": "repo-e", "TaskView": "taskview-community"}
 TRIGGERS = {"ia·plan": "plan", "ia·ejecutar": "exec"}
-PROGRESS = {"ia·trabajando": "#f59e0b", "ia·plan-listo": "#3b82f6", "ia·hecho": "#22c55e", "ia·fallo": "#ef4444"}
+PROGRESS = {"ia·trabajando": "#f59e0b", "ia·plan-listo": "#3b82f6", "ia·hecho": "#22c55e", "ia·cambios": "#eab308", "ia·fallo": "#ef4444"}
 TRIGGER_COLORS = {"ia·plan": "#3b82f6", "ia·ejecutar": "#f97316"}
-BUDGET = {"plan": "1.5", "exec": "5"}
-TIMEOUT = {"plan": 15 * 60, "exec": 40 * 60}
+MODELS = {"plan": "claude-opus-5-5", "exec": "claude-sonnet-5-5", "review": "claude-opus-5-5"}
+BUDGET = {"plan": "2", "exec": "5", "review": "2"}
+TIMEOUT = {"plan": 15 * 60, "exec": 40 * 60, "review": 15 * 60}
 ALLOWED = ["Read", "Glob", "Grep", "Edit", "Write", "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git add:*)",
            "Bash(git commit:*)", "Bash(ls:*)", "Bash(npm:*)", "Bash(npx:*)", "Bash(pnpm:*)", "Bash(python3:*)", "Bash(node:*)"]
 DENIED = ["Bash(git push:*)", "Bash(rm:*)", "Bash(curl:*)", "Bash(sudo:*)", "Bash(git reset:*)", "Bash(git checkout main:*)"]
@@ -91,6 +93,32 @@ def toggle(api, tags, t, name, on):
         t["tags"] = (list(t.get("tags") or []) + [tags[name]]) if on else [x for x in t["tags"] if x != tags[name]]
 
 
+def board_context(api, goal, st, t):
+    """Board name/description plus the titles of sibling tasks, so the model knows what the project is about."""
+    sib = []
+    for name in ("In Progress", "Review", "TODO", "Backlog"):
+        if name in st:
+            for x in api("GET", f"/module/kanban/tasks/{goal['id']}/{st[name]}/null")["tasks"]:
+                if x["id"] != t["id"] and len(sib) < 15:
+                    sib.append(f"- [{name}] {x['description']}")
+    desc = (goal.get("description") or "").strip()
+    return (f"Proyecto (board de TaskView): {goal['name']}\n" + (f"Descripción del proyecto: {desc}\n" if desc else "")
+            + ("Otras tareas del proyecto (solo contexto, no son tu tarea):\n" + "\n".join(sib) + "\n" if sib else ""))
+
+
+def ask(prompt, perm, model, mode, cwd):
+    """Run one claude -p session; returns (ok, text)."""
+    try:
+        p = subprocess.run(["claude", "-p", prompt, "--model", model, "--permission-mode", perm, "--max-budget-usd", BUDGET[mode],
+                            "--allowedTools", *ALLOWED, "--disallowedTools", *DENIED],
+                           cwd=cwd, env={**os.environ, "TASKVIEW_NOHOOK": "1"}, capture_output=True, text=True, timeout=TIMEOUT[mode])
+        return p.returncode == 0, (p.stdout or p.stderr or "").strip()
+    except subprocess.TimeoutExpired:
+        return False, f"Timeout ({TIMEOUT[mode] // 60} min)."
+    except Exception as e:
+        return False, f"Error: {e}"
+
+
 def run(api, goal, repo, st, tags, t, mode):
     tid, trig = t["id"], "ia·plan" if mode == "plan" else "ia·ejecutar"
     log(f"start t{tid} {mode} [{goal['name']}] {t['description']}")
@@ -100,43 +128,50 @@ def run(api, goal, repo, st, tags, t, mode):
     note = t.get("note") or ""
     base = CODE / repo
     branch, wt = f"ai/t{tid}", WORKTREES / f"{repo}-t{tid}"
-    ok, out = False, ""
+    ctx = board_context(api, goal, st, t)
+    stamp = lambda: time.strftime("%F %H:%M")
+    sections, ok, verdict_ok = [], False, True
     try:
         if not wt.exists():
             WORKTREES.mkdir(exist_ok=True)
             start = "main" if subprocess.run(["git", "-C", str(base), "rev-parse", "--verify", "main"], capture_output=True).returncode == 0 else "HEAD"
             subprocess.run(["git", "-C", str(base), "worktree", "add", "-b", branch, str(wt), start], check=True, capture_output=True)
+        task_txt = f"Tarea de TaskView #{tid}: {t['description']}\n\nNotas de la tarea:\n{note}\n"
         if mode == "plan":
-            prompt = (f"Tarea de TaskView #{tid}: {t['description']}\n\nNotas:\n{note}\n\n"
-                      "Analiza el repo y escribe un plan de implementación concreto: archivos a tocar, pasos, riesgos y cómo verificarlo. "
-                      "NO modifiques nada. Responde en español, conciso, en markdown.")
-            perm = "plan"
+            ok, out = ask(f"{ctx}\n{task_txt}\nAnaliza el repo y escribe un plan de implementación concreto: archivos a tocar, pasos, riesgos y cómo verificarlo. "
+                          "NO modifiques nada. Responde en español, conciso, en markdown.", "plan", MODELS["plan"], "plan", wt)
+            sections.append((f"Plan de la IA · {MODELS['plan']}", ok, out))
         else:
-            prompt = (f"Implementa la tarea de TaskView #{tid}: {t['description']}\n\nNotas (puede incluir un plan aprobado):\n{note}\n\n"
-                      f"Trabajas en la rama {branch} de un git worktree. Haz commits pequeños con mensaje claro, sin firmas de IA. "
-                      "No hagas push, no toques .env ni secretos, no borres nada fuera de lo necesario. Verifica con los tests/build del repo si existen. "
-                      "Termina con un resumen en español: qué cambió, cómo verificarlo y qué queda pendiente.")
-            perm = "acceptEdits"
-        env = {**os.environ, "TASKVIEW_NOHOOK": "1"}
-        p = subprocess.run(["claude", "-p", prompt, "--permission-mode", perm, "--max-budget-usd", BUDGET[mode],
-                            "--allowedTools", *ALLOWED, "--disallowedTools", *DENIED],
-                           cwd=wt, env=env, capture_output=True, text=True, timeout=TIMEOUT[mode])
-        out, ok = (p.stdout or p.stderr or "").strip(), p.returncode == 0
-    except subprocess.TimeoutExpired:
-        out = f"Timeout ({TIMEOUT[mode] // 60} min)."
+            ok, out = ask(f"{ctx}\n{task_txt}\n(Las notas pueden incluir un plan ya aprobado: síguelo.)\n"
+                          f"Trabajas en la rama {branch} de un git worktree. Haz commits pequeños con mensaje claro, sin firmas de IA. "
+                          "No hagas push, no toques .env ni secretos, no borres nada fuera de lo necesario. Verifica con los tests/build del repo si existen. "
+                          "Termina con un resumen en español: qué cambió, cómo verificarlo y qué queda pendiente.", "acceptEdits", MODELS["exec"], "exec", wt)
+            sections.append((f"Resultado de la IA · {MODELS['exec']}", ok, out))
+            if ok and subprocess.run(["git", "-C", str(wt), "status", "--porcelain"], capture_output=True, text=True).stdout.strip():
+                # headless sessions cannot get approval for git add/commit, so the dispatcher commits what the model left behind
+                subprocess.run(["git", "-C", str(wt), "add", "-A"], capture_output=True)
+                c = subprocess.run(["git", "-C", str(wt), "commit", "-q", "-m", t["description"][:72]], capture_output=True, text=True)
+                sections.append(("Commit del dispatcher", c.returncode == 0, c.stdout + c.stderr or t["description"][:72]))
+            if ok:
+                rok, rout = ask(f"{ctx}\n{task_txt}\nOtra IA implementó esta tarea en la rama {branch} (worktree actual). Revisa con `git diff main...HEAD` y `git log main..HEAD`: "
+                                "¿cumple lo pedido?, ¿bugs, casos límite, seguridad o cambios fuera de alcance?, ¿faltan tests? NO modifiques nada. "
+                                "Empieza con una línea `VEREDICTO: APROBADO` o `VEREDICTO: CAMBIOS`, y después hallazgos concretos con archivo y línea.", "plan", MODELS["review"], "review", wt)
+                verdict_ok = rok and "VEREDICTO: APROBADO" in rout
+                sections.append((f"Revisión · {MODELS['review']}", rok, rout))
     except Exception as e:
-        out = f"Error: {e}"
-    stamp = time.strftime("%F %H:%M")
-    head = {"plan": "Plan de la IA", "exec": "Resultado de la IA"}[mode]
-    extra = f"\nRama: {branch} · worktree: {wt}" if mode == "exec" else ""
-    new_note = f"{note}\n\n--- {head} ({stamp}){' — FALLÓ' if not ok else ''} ---\n{out[-6000:]}{extra}".strip()
-    done_tag = "ia·fallo" if not ok else ("ia·plan-listo" if mode == "plan" else "ia·hecho")
+        sections.append(("Error", False, str(e)))
+        ok = False
+    body = "".join(f"\n\n--- {h} ({stamp()}){'' if k else ' — FALLÓ'} ---\n{o[-6000:]}" for h, k, o in sections)
+    if mode == "exec":
+        body += f"\nRama: {branch} · worktree: {wt}"
+    done_tag = "ia·fallo" if not ok else ("ia·plan-listo" if mode == "plan" else ("ia·hecho" if verdict_ok else "ia·cambios"))
     toggle(api, tags, t, "ia·trabajando", False)
     toggle(api, tags, t, done_tag, True)
-    api("PATCH", "/module/tasks", {"id": tid, "note": new_note, "statusId": st["Review"]})
-    log(f"end t{tid} ok={ok}")
-    subprocess.run([sys.executable, str(HERE / "notify.py"), f"IA {'ok' if ok else 'fallo'}: {t['description'][:60]}",
-                    {"plan": "Plan listo para revisar", "exec": "Implementación lista en Review"}[mode] if ok else "Revisa la nota de la tarea", "3" if ok else "4"])
+    api("PATCH", "/module/tasks", {"id": tid, "note": f"{note}{body}".strip(), "statusId": st["Review"]})
+    log(f"end t{tid} ok={ok} {done_tag}")
+    msg = {"ia·fallo": "Revisa la nota de la tarea", "ia·plan-listo": "Plan listo para revisar", "ia·hecho": "Implementada y aprobada por la revisión",
+           "ia·cambios": "Implementada, la revisión pide cambios"}[done_tag]
+    subprocess.run([sys.executable, str(HERE / "notify.py"), f"IA: {t['description'][:60]}", msg, "4" if done_tag in ("ia·fallo", "ia·cambios") else "3"])
 
 
 if __name__ == "__main__":
