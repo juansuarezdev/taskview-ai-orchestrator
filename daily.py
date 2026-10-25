@@ -37,6 +37,12 @@ def main():
                 continue
             for t in api("GET", f"/module/kanban/tasks/{g['id']}/{s['id']}/null")["tasks"]:
                 end = (t.get("endDate") or "")[:10]
+                try:
+                    time.strptime(end, "%Y-%m-%d")
+                    if len(end) != 10:
+                        end = ""
+                except ValueError:
+                    end = ""
                 if mine in (t.get("tags") or []) and end and end <= today:
                     due.append(f"{t['description']} ({g['name']}{', vencida' if end < today else ''})")
                 if s["name"] == "Review":
