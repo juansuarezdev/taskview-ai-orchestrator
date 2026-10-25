@@ -2,9 +2,11 @@
 """List the git worktrees created by ai-dispatch (~/Projects/code/.ai-worktrees) and whether their task is Done.
 
 Default is a dry run. `--remove` deletes only worktrees whose task is Done and whose branch has no unmerged
-commits; the branch itself is kept.
+commits; the branch itself is kept. If `git log main..ai/t<id>` fails (missing repo, branch or `main`) the
+worktree is 'not verifiable': it is never removed and the reason is shown in the text line.
 
-`--json` prints a JSON list of {repo, task_id, state ('Done'/'abierta'), unmerged (number of unmerged commits)}
+`--json` prints a JSON list of {repo, task_id, state ('Done'/'abierta'), unmerged (number of unmerged commits,
+or null when git could not check the branch)}
 instead of text lines (`[]` when there are no worktrees). Combined with `--remove`, the JSON shows the state
 before removing. Unknown arguments exit with code 2 and a usage message.
 """
@@ -45,13 +47,17 @@ def main():
         if not m:
             continue
         repo, tid = Path.home() / "Projects/code" / m[1], int(m[2])
-        unmerged = subprocess.run(["git", "-C", str(repo), "log", "--oneline", f"main..ai/t{tid}"], capture_output=True, text=True).stdout.strip()
+        r = subprocess.run(["git", "-C", str(repo), "log", "--oneline", f"main..ai/t{tid}"], capture_output=True, text=True)
         state = "Done" if tid in done else "abierta"
-        n = len(unmerged.splitlines())
+        verifiable = r.returncode == 0
+        n = len(r.stdout.strip().splitlines()) if verifiable else None
         rows.append({"repo": m[1], "task_id": tid, "state": state, "unmerged": n})
         if not args.json:
-            print(f"{wt.name}: tarea {state}, {n} commits sin mergear")
-        if args.remove and tid in done and not unmerged:
+            if verifiable:
+                print(f"{wt.name}: tarea {state}, {n} commits sin mergear")
+            else:
+                print(f"{wt.name}: tarea {state}, no verificable ({r.stderr.strip() or 'git log falló'}); no se elimina")
+        if args.remove and tid in done and verifiable and n == 0:
             subprocess.run(["git", "-C", str(repo), "worktree", "remove", str(wt)])
             if not args.json:
                 print("  eliminado")
