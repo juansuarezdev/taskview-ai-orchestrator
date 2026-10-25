@@ -3,6 +3,7 @@
 
 - Tasks tagged `para-mí` (not done) due today or overdue.
 - What is waiting in Review and what the AI dispatcher did since yesterday.
+Also prunes finished ai/ worktrees and branches (ai-clean.py --remove).
 Run daily from launchd (com.example.taskview-daily).
 """
 import json, subprocess, sys, time, urllib.request
@@ -21,6 +22,8 @@ def call(method, path, body=None, tok=None):
 
 
 def main():
+    # housekeeping: drop worktrees and ai/ branches of finished work (merged PRs / Done tasks)
+    subprocess.run([sys.executable, str(HERE / "ai-clean.py"), "--remove"], capture_output=True)
     c = dict(l.strip().split("=", 1) for l in (HERE / ".credentials").read_text().splitlines() if "=" in l)
     tok = call("POST", "/module/auth/login", {"login": c["login"], "password": c["password"]})["access"]
     api = lambda m, p, b=None: call(m, p, b, tok)["response"]
