@@ -3,8 +3,12 @@
 
 Default is a dry run. `--remove` deletes only worktrees whose task is Done and whose branch has no unmerged
 commits; the branch itself is kept.
+
+`--json` prints a JSON list of {repo, task_id, state ('Done'/'abierta'), unmerged (number of unmerged commits)}
+instead of text lines (`[]` when there are no worktrees). Combined with `--remove`, the JSON shows the state
+before removing. Unknown arguments exit with code 2 and a usage message.
 """
-import json, re, subprocess, sys, urllib.request
+import argparse, json, re, subprocess, urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -21,8 +25,12 @@ def call(method, path, body=None, tok=None):
 
 
 def main():
+    ap = argparse.ArgumentParser(description="List ai-dispatch worktrees and whether their task is Done.")
+    ap.add_argument("--remove", action="store_true", help="remove worktrees whose task is Done and have no unmerged commits")
+    ap.add_argument("--json", action="store_true", help="print the worktree list as JSON")
+    args = ap.parse_args()
     if not WT.exists():
-        return print("sin worktrees")
+        return print("[]" if args.json else "sin worktrees")
     c = dict(l.strip().split("=", 1) for l in (HERE / ".credentials").read_text().splitlines() if "=" in l)
     tok = call("POST", "/module/auth/login", {"login": c["login"], "password": c["password"]})["access"]
     api = lambda m, p, b=None: call(m, p, b, tok)["response"]
@@ -31,6 +39,7 @@ def main():
         for s in api("POST", "/module/kanban/fetch-statuses", {"goalId": g["id"]}):
             if s["name"] == "Done":
                 done |= {t["id"] for t in api("GET", f"/module/kanban/tasks/{g['id']}/{s['id']}/null")["tasks"]}
+    rows = []
     for wt in sorted(WT.iterdir()):
         m = re.match(r"(.+)-t(\d+)$", wt.name)
         if not m:
@@ -38,10 +47,16 @@ def main():
         repo, tid = Path.home() / "Projects/code" / m[1], int(m[2])
         unmerged = subprocess.run(["git", "-C", str(repo), "log", "--oneline", f"main..ai/t{tid}"], capture_output=True, text=True).stdout.strip()
         state = "Done" if tid in done else "abierta"
-        print(f"{wt.name}: tarea {state}, {len(unmerged.splitlines())} commits sin mergear")
-        if "--remove" in sys.argv and tid in done and not unmerged:
+        n = len(unmerged.splitlines())
+        rows.append({"repo": m[1], "task_id": tid, "state": state, "unmerged": n})
+        if not args.json:
+            print(f"{wt.name}: tarea {state}, {n} commits sin mergear")
+        if args.remove and tid in done and not unmerged:
             subprocess.run(["git", "-C", str(repo), "worktree", "remove", str(wt)])
-            print("  eliminado")
+            if not args.json:
+                print("  eliminado")
+    if args.json:
+        print(json.dumps(rows))
 
 
 if __name__ == "__main__":
