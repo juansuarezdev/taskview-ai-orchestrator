@@ -32,8 +32,17 @@ def latest_backup_size():
     return files[-1].stat().st_size if files else 0
 
 
+def ntfy_up():
+    try:
+        urllib.request.urlopen("http://127.0.0.1:2586/v1/health", timeout=3)
+        return True
+    except Exception:
+        return False
+
+
 def notify(msg):
     sh("osascript", "-e", f'display notification "{msg}" with title "TaskView"')
+    sh(sys.executable, str(HERE / "notify.py"), "TaskView", msg, "4")
 
 
 def main():
@@ -42,6 +51,10 @@ def main():
         sh("docker", "compose", "up", "-d", cwd=HERE)
         if not api_up():
             problems.append("la API no responde")
+    if not ntfy_up():
+        sh("docker", "compose", "up", "-d", "ntfy", cwd=HERE)
+        if not ntfy_up():
+            problems.append("ntfy no responde")
     if api_up() and latest_backup_size() < 1024:
         sh("bash", str(HERE / "backup.sh"))
         if latest_backup_size() < 1024:
