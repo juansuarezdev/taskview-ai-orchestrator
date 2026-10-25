@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keeps the General board in step with the outside world.
+"""Keeps the project boards in step with the outside world.
 
 1. GitHub: open issues/PRs of the user's own repos become tasks (deduped by sourceUrl);
    closed or merged ones are moved to Done and completed.
@@ -13,7 +13,10 @@ API = "http://127.0.0.1:1725"
 HERE = Path(__file__).parent
 CODE = Path.home() / "Projects/code"
 OWNER = "your-github-user"
-GOAL = "General"
+# repo directory in ~/Projects/code -> board (only active projects sync)
+REPO_BOARDS = {"repo-m": "Board M", "repo-g": "Board G", "repo-e": "Board E",
+               "taskview-community": "TaskView", "repo-tm": "TaskView"}
+KIND_COLORS = {"issue": "#f59e0b", "pr": "#3b82f6"}
 REMINDER_PREFIX = "TaskView: "
 
 
@@ -39,37 +42,44 @@ def main():
     tok = call("POST", "/module/auth/login", {"login": c["login"], "password": c["password"]})["access"]
     api = lambda m, p, b=None: call(m, p, b, tok)["response"]
 
-    goal = next(g for g in api("GET", "/module/goals") if g["name"] == GOAL)
-    gid = goal["id"]
-    statuses = {s["name"]: s["id"] for s in api("POST", "/module/kanban/fetch-statuses", {"goalId": gid})}
-    lists = {l["name"]: l["id"] for l in api("GET", f"/module/goal_lists/{gid}")}
-
-    tasks = []
-    for sid in statuses.values():
-        r = api("GET", f"/module/kanban/tasks/{gid}/{sid}/null")
-        tasks += r["tasks"]
-        while r["nextCursor"]:
-            r = api("GET", f"/module/kanban/tasks/{gid}/{sid}/{r['nextCursor']}")
+    goals = {g["name"]: g for g in api("GET", "/module/goals") if not g["archive"]}
+    boards, tasks = {}, []
+    for name, g in goals.items():
+        gid = g["id"]
+        statuses = {s["name"]: s["id"] for s in api("POST", "/module/kanban/fetch-statuses", {"goalId": gid})}
+        boards[name] = (gid, statuses, {x["name"]: x["id"] for x in api("GET", f"/module/tags?goalId={gid}")})
+        for sid in statuses.values():
+            r = api("GET", f"/module/kanban/tasks/{gid}/{sid}/null")
             tasks += r["tasks"]
+            while r["nextCursor"]:
+                r = api("GET", f"/module/kanban/tasks/{gid}/{sid}/{r['nextCursor']}")
+                tasks += r["tasks"]
     by_url = {t["sourceUrl"]: t for t in tasks if t.get("sourceUrl")}
+    done_status = {gid: st["Done"] for gid, st, _ in boards.values()}
 
-    # 1. GitHub issues and PRs
-    for name, lid in lists.items():
-        remote = sh("git", "-C", str(CODE / name), "remote", "get-url", "origin")
+    # 1. GitHub issues and PRs, one board per project
+    for repo_dir, board in REPO_BOARDS.items():
+        if board not in boards:
+            continue
+        gid, statuses, kind_tags = boards[board]
+        remote = sh("git", "-C", str(CODE / repo_dir), "remote", "get-url", "origin")
         if f"github.com/{OWNER}/" not in remote:
             continue
         repo = remote.split("github.com/")[1].removesuffix(".git")
-        for kind, flag in (("issue", "--state"), ("pr", "--state")):
-            out = sh("gh", kind, "list", "-R", repo, flag, "all", "--limit", "100", "--json", "number,title,url,state")
+        for kind in ("issue", "pr"):
+            out = sh("gh", kind, "list", "-R", repo, "--state", "all", "--limit", "100", "--json", "number,title,url,state")
             for it in json.loads(out or "[]"):
                 is_open = it["state"] == "OPEN"
                 t = by_url.get(it["url"])
                 if t is None and is_open:
-                    api("POST", "/module/tasks", {"goalId": gid, "goalListId": lid, "statusId": statuses["TODO"],
-                                                  "description": f"[{kind} #{it['number']}] {it['title']}", "sourceUrl": it["url"]})
+                    new = api("POST", "/module/tasks", {"goalId": gid, "statusId": statuses["TODO"], "description": it["title"],
+                                                        "note": f"{kind} #{it['number']}", "sourceUrl": it["url"]})
+                    if kind not in kind_tags:
+                        kind_tags[kind] = api("POST", "/module/tags", {"name": kind, "color": KIND_COLORS[kind], "goalId": gid})["id"]
+                    api("PATCH", "/module/tags/toggle", {"tagId": kind_tags[kind], "taskId": new["id"]})
                     print("added", it["url"])
                 elif t is not None and not is_open and not t["complete"]:
-                    api("PATCH", "/module/tasks", {"id": t["id"], "complete": True, "statusId": statuses["Done"]})
+                    api("PATCH", "/module/tasks", {"id": t["id"], "complete": True, "statusId": done_status[t["goalId"]]})
                     print("closed", it["url"])
 
     # 2. Reminders (iCloud only)
