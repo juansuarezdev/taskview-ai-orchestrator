@@ -21,6 +21,7 @@ TRIGGERS = {"ia·plan": "plan", "ia·ejecutar": "exec"}
 PROGRESS = {"ia·trabajando": "#f59e0b", "ia·plan-listo": "#3b82f6", "ia·hecho": "#22c55e", "ia·cambios": "#eab308", "ia·fallo": "#ef4444"}
 TRIGGER_COLORS = {"ia·plan": "#3b82f6", "ia·ejecutar": "#f97316"}
 MODELS = {"plan": "claude-opus-5-5", "exec": "claude-sonnet-5-5", "review": "claude-opus-5-5"}
+MAX_ROUNDS = 3  # execute + review rounds when the review asks for changes
 BUDGET = {"plan": "2", "exec": "5", "review": "2"}
 TIMEOUT = {"plan": 15 * 60, "exec": 40 * 60, "review": 15 * 60}
 ALLOWED = ["Read", "Glob", "Grep", "Edit", "Write", "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git add:*)",
@@ -142,22 +143,30 @@ def run(api, goal, repo, st, tags, t, mode):
                           "NO modifiques nada. Responde en español, conciso, en markdown.", "plan", MODELS["plan"], "plan", wt)
             sections.append((f"Plan de la IA · {MODELS['plan']}", ok, out))
         else:
-            ok, out = ask(f"{ctx}\n{task_txt}\n(Las notas pueden incluir un plan ya aprobado: síguelo.)\n"
-                          f"Trabajas en la rama {branch} de un git worktree. Haz commits pequeños con mensaje claro, sin firmas de IA. "
-                          "No hagas push, no toques .env ni secretos, no borres nada fuera de lo necesario. Verifica con los tests/build del repo si existen. "
-                          "Termina con un resumen en español: qué cambió, cómo verificarlo y qué queda pendiente.", "acceptEdits", MODELS["exec"], "exec", wt)
-            sections.append((f"Resultado de la IA · {MODELS['exec']}", ok, out))
-            if ok and subprocess.run(["git", "-C", str(wt), "status", "--porcelain"], capture_output=True, text=True).stdout.strip():
-                # headless sessions cannot get approval for git add/commit, so the dispatcher commits what the model left behind
-                subprocess.run(["git", "-C", str(wt), "add", "-A"], capture_output=True)
-                c = subprocess.run(["git", "-C", str(wt), "commit", "-q", "-m", t["description"][:72]], capture_output=True, text=True)
-                sections.append(("Commit del dispatcher", c.returncode == 0, c.stdout + c.stderr or t["description"][:72]))
-            if ok:
+            feedback = ""
+            for attempt in range(1, MAX_ROUNDS + 1):
+                tag = f" · ronda {attempt}" if MAX_ROUNDS > 1 else ""
+                ok, out = ask(f"{ctx}\n{task_txt}\n(Las notas pueden incluir un plan ya aprobado: síguelo.)\n{feedback}"
+                              f"Trabajas en la rama {branch} de un git worktree. Haz commits pequeños con mensaje claro, sin firmas de IA. "
+                              "No hagas push, no toques .env ni secretos, no borres nada fuera de lo necesario. Verifica con los tests/build del repo si existen. "
+                              "Termina con un resumen en español: qué cambió, cómo verificarlo y qué queda pendiente.", "acceptEdits", MODELS["exec"], "exec", wt)
+                sections.append((f"Resultado de la IA · {MODELS['exec']}{tag}", ok, out))
+                if ok and subprocess.run(["git", "-C", str(wt), "status", "--porcelain"], capture_output=True, text=True).stdout.strip():
+                    # headless sessions cannot get approval for git add/commit, so the dispatcher commits what the model left behind
+                    subprocess.run(["git", "-C", str(wt), "add", "-A"], capture_output=True)
+                    c = subprocess.run(["git", "-C", str(wt), "commit", "-q", "-m", t["description"][:72] + (f" (ronda {attempt})" if attempt > 1 else "")],
+                                       capture_output=True, text=True)
+                    sections.append(("Commit del dispatcher", c.returncode == 0, c.stdout + c.stderr or t["description"][:72]))
+                if not ok:
+                    break
                 rok, rout = ask(f"{ctx}\n{task_txt}\nOtra IA implementó esta tarea en la rama {branch} (worktree actual). Revisa con `git diff main...HEAD` y `git log main..HEAD`: "
                                 "¿cumple lo pedido?, ¿bugs, casos límite, seguridad o cambios fuera de alcance?, ¿faltan tests? NO modifiques nada. "
                                 "Empieza con una línea `VEREDICTO: APROBADO` o `VEREDICTO: CAMBIOS`, y después hallazgos concretos con archivo y línea.", "plan", MODELS["review"], "review", wt)
                 verdict_ok = rok and "VEREDICTO: APROBADO" in rout
-                sections.append((f"Revisión · {MODELS['review']}", rok, rout))
+                sections.append((f"Revisión · {MODELS['review']}{tag}", rok, rout))
+                if verdict_ok or not rok:
+                    break
+                feedback = f"Una revisión previa de tu trabajo pidió cambios. Corrígelos ahora sobre lo ya hecho (no empieces de cero):\n{rout[-3000:]}\n\n"
     except Exception as e:
         sections.append(("Error", False, str(e)))
         ok = False
