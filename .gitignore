@@ -3,3 +3,5 @@ logs/
 .credentials
 .jwt
 cj
+.ntfy-topic
+__pycache__/
