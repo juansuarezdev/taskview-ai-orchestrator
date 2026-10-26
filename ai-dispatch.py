@@ -3,7 +3,7 @@
 
 Tag a task (not `para-mí`, status Backlog/TODO) in a project board with:
   ia·plan      -> claude plans only (read-only), writes the plan into the task note, moves it to Review
-  ia·opencode  -> same as ia·ejecutar but OpenCode implements (opencode-go/kimi-k2.7-code); Opus still reviews
+  ia·opencode  -> same as ia·ejecutar but OpenCode implements (free model opencode/big-pickle); Opus still reviews
   ia·ejecutar  -> claude implements it in its own git worktree/branch `ai/t<id>`, never pushes, moves it to Review
 Models: plan = Opus, exec = Sonnet, then an automatic review by Opus (ia·hecho if approved, ia·cambios if not).
 Progress tags: ia·trabajando while running, then ia·plan-listo / ia·hecho / ia·cambios / ia·fallo.
@@ -125,8 +125,8 @@ def ask(prompt, perm, model, mode, cwd):
 
 
 OC_BIN = str(Path.home() / ".opencode/bin/opencode")  # launchd PATH does not include it
-_OC_FILE = HERE / ".opencode-model"  # one line, e.g. opencode-go/kimi-k2.7-code; overrides the default below
-OC_MODEL = _OC_FILE.read_text().strip() if _OC_FILE.exists() else "opencode-go/kimi-k2.7-code"
+_OC_FILE = HERE / ".opencode-model"  # one line, e.g. opencode/nemotron-3-ultra-free; overrides the default below
+OC_MODEL = _OC_FILE.read_text().strip() if _OC_FILE.exists() else "opencode/big-pickle"  # free model; no paid OpenCode plan
 OC_TIMEOUT = 40 * 60
 OC_PERMISSION = {"bash": {"*": "allow", "git push*": "deny", "git reset*": "deny", "rm *": "deny", "sudo*": "deny", "curl*": "deny", "wget*": "deny"},
                  "edit": "allow"}
