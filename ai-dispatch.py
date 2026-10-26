@@ -14,9 +14,10 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 API = "http://127.0.0.1:1725"
 CODE = Path.home() / "Projects/code"
+EXTRA_ROOTS = {"repo-r": Path.home() / "Projects/repo-r"}  # boards whose folder lives outside ~/Projects/code (not a git repo: plan only)
 WORKTREES = CODE / ".ai-worktrees"
 LOG = HERE / "logs/ai-dispatch.log"
-REPOS = {"Board M": "repo-m", "Board G": "repo-g", "Board E": "repo-e", "TaskView": "taskview-community"}
+REPOS = {"Board M": "repo-m", "Board G": "repo-g", "Board E": "repo-e", "TaskView": "taskview-community", "Board R": "repo-r"}
 TRIGGERS = {"ia·plan": "plan", "ia·ejecutar": "exec"}
 PROGRESS = {"ia·trabajando": "#f59e0b", "ia·plan-listo": "#3b82f6", "ia·hecho": "#22c55e", "ia·cambios": "#eab308", "ia·fallo": "#ef4444"}
 TRIGGER_COLORS = {"ia·plan": "#3b82f6", "ia·ejecutar": "#f97316"}
@@ -26,6 +27,7 @@ BUDGET = {"plan": "2", "exec": "5", "review": "2"}
 TIMEOUT = {"plan": 15 * 60, "exec": 40 * 60, "review": 15 * 60}
 ALLOWED = ["Read", "Glob", "Grep", "Edit", "Write", "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git add:*)",
            "Bash(git commit:*)", "Bash(ls:*)", "Bash(npm:*)", "Bash(npx:*)", "Bash(pnpm:*)", "Bash(python3:*)", "Bash(node:*)"]
+WEB = ["WebSearch", "WebFetch"]  # analysis (plan) sessions may research the web
 DENIED = ["Bash(git push:*)", "Bash(rm:*)", "Bash(curl:*)", "Bash(sudo:*)", "Bash(git reset:*)", "Bash(git checkout main:*)"]
 
 
@@ -111,7 +113,7 @@ def ask(prompt, perm, model, mode, cwd):
     """Run one claude -p session; returns (ok, text)."""
     try:
         p = subprocess.run(["claude", "-p", prompt, "--model", model, "--permission-mode", perm, "--max-budget-usd", BUDGET[mode],
-                            "--allowedTools", *ALLOWED, "--disallowedTools", *DENIED],
+                            "--allowedTools", *ALLOWED, *(WEB if perm == "plan" else []), "--disallowedTools", *DENIED],
                            cwd=cwd, env={**os.environ, "TASKVIEW_NOHOOK": "1"}, capture_output=True, text=True, timeout=TIMEOUT[mode])
         return p.returncode == 0, (p.stdout or p.stderr or "").strip()
     except subprocess.TimeoutExpired:
@@ -127,13 +129,18 @@ def run(api, goal, repo, st, tags, t, mode):
     toggle(api, tags, t, "ia·trabajando", True)
     api("PATCH", "/module/tasks", {"id": tid, "statusId": st["In Progress"]})
     note = t.get("note") or ""
-    base = CODE / repo
+    base = EXTRA_ROOTS.get(repo, CODE / repo)
+    in_place = not (base / ".git").exists()  # no repo: no worktree, read-only analysis only
     branch, wt = f"ai/t{tid}", WORKTREES / f"{repo}-t{tid}"
     ctx = board_context(api, goal, st, t)
     stamp = lambda: time.strftime("%F %H:%M")
     sections, ok, verdict_ok = [], False, True
     try:
-        if not wt.exists():
+        if in_place:
+            if mode != "plan":
+                raise RuntimeError(f"{base} no es un repo git: solo se admite ia·plan (análisis sin cambios)")
+            wt = base
+        elif not wt.exists():
             WORKTREES.mkdir(exist_ok=True)
             start = "main" if subprocess.run(["git", "-C", str(base), "rev-parse", "--verify", "main"], capture_output=True).returncode == 0 else "HEAD"
             subprocess.run(["git", "-C", str(base), "worktree", "add", "-b", branch, str(wt), start], check=True, capture_output=True)
