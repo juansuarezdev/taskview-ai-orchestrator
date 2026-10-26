@@ -3,6 +3,7 @@
 
 Tag a task (not `para-mí`, status Backlog/TODO) in a project board with:
   ia·plan      -> claude plans only (read-only), writes the plan into the task note, moves it to Review
+  ia·opencode  -> same as ia·ejecutar but OpenCode implements (opencode-go/kimi-k2.7-code); Opus still reviews
   ia·ejecutar  -> claude implements it in its own git worktree/branch `ai/t<id>`, never pushes, moves it to Review
 Models: plan = Opus, exec = Sonnet, then an automatic review by Opus (ia·hecho if approved, ia·cambios if not).
 Progress tags: ia·trabajando while running, then ia·plan-listo / ia·hecho / ia·cambios / ia·fallo.
@@ -18,9 +19,9 @@ EXTRA_ROOTS = {"repo-r": Path.home() / "Projects/repo-r"}  # boards whose folder
 WORKTREES = CODE / ".ai-worktrees"
 LOG = HERE / "logs/ai-dispatch.log"
 REPOS = {"Board M": "repo-m", "Board G": "repo-g", "Board E": "repo-e", "TaskView": "taskview-community", "Board R": "repo-r"}
-TRIGGERS = {"ia·plan": "plan", "ia·ejecutar": "exec"}
+TRIGGERS = {"ia·plan": ("plan", "claude"), "ia·ejecutar": ("exec", "claude"), "ia·opencode": ("exec", "opencode")}
 PROGRESS = {"ia·trabajando": "#f59e0b", "ia·plan-listo": "#3b82f6", "ia·hecho": "#22c55e", "ia·cambios": "#eab308", "ia·fallo": "#ef4444"}
-TRIGGER_COLORS = {"ia·plan": "#3b82f6", "ia·ejecutar": "#f97316"}
+TRIGGER_COLORS = {"ia·plan": "#3b82f6", "ia·ejecutar": "#f97316", "ia·opencode": "#10b981"}
 MODELS = {"plan": "claude-opus-5-5", "exec": "claude-sonnet-5-5", "review": "claude-opus-5-5"}
 MAX_ROUNDS = 3  # execute + review rounds when the review asks for changes
 BUDGET = {"plan": "2", "exec": "5", "review": "2"}
@@ -79,12 +80,13 @@ def main():
                     have = set(t.get("tags") or [])
                     if tags.get("para-mí") in have:
                         continue
-                    mode = next((m for n, m in TRIGGERS.items() if tags.get(n) in have), None)
-                    if mode:
+                    hit = next(((n, m, rn) for n, (m, rn) in TRIGGERS.items() if tags.get(n) in have), None)
+                    if hit:
+                        trig, mode, runner = hit
                         if dry:
-                            print(f"[{g['name']}] t{t['id']} {mode}: {t['description']}")
+                            print(f"[{g['name']}] t{t['id']} {mode}/{runner}: {t['description']}")
                         else:
-                            run(api, g, repo, st, tags, t, mode)
+                            run(api, g, repo, st, tags, t, mode, trig, runner)
                             return  # one task per tick
                 cur = str(r["nextCursor"]) if r.get("nextCursor") else ""
 
@@ -122,8 +124,28 @@ def ask(prompt, perm, model, mode, cwd):
         return False, f"Error: {e}"
 
 
-def run(api, goal, repo, st, tags, t, mode):
-    tid, trig = t["id"], "ia·plan" if mode == "plan" else "ia·ejecutar"
+OC_BIN = str(Path.home() / ".opencode/bin/opencode")  # launchd PATH does not include it
+_OC_FILE = HERE / ".opencode-model"  # one line, e.g. opencode-go/kimi-k2.7-code; overrides the default below
+OC_MODEL = _OC_FILE.read_text().strip() if _OC_FILE.exists() else "opencode-go/kimi-k2.7-code"
+OC_TIMEOUT = 40 * 60
+OC_PERMISSION = {"bash": {"*": "allow", "git push*": "deny", "git reset*": "deny", "rm *": "deny", "sudo*": "deny", "curl*": "deny", "wget*": "deny"},
+                 "edit": "allow"}
+
+
+def ask_opencode(prompt, cwd):
+    """Run one `opencode run` session with the same guard rails as the claude executor; returns (ok, text)."""
+    try:
+        p = subprocess.run([OC_BIN, "run", "--model", OC_MODEL, "--dir", str(cwd), prompt], cwd=cwd, capture_output=True, text=True,
+                           timeout=OC_TIMEOUT, env={**os.environ, "TASKVIEW_NOHOOK": "1", "OPENCODE_PERMISSION": json.dumps(OC_PERMISSION)})
+        return p.returncode == 0, (p.stdout or p.stderr or "").strip()
+    except subprocess.TimeoutExpired:
+        return False, f"Timeout ({OC_TIMEOUT // 60} min)."
+    except Exception as e:
+        return False, f"Error: {e}"
+
+
+def run(api, goal, repo, st, tags, t, mode, trig, runner="claude"):
+    tid = t["id"]
     log(f"start t{tid} {mode} [{goal['name']}] {t['description']}")
     toggle(api, tags, t, trig, False)
     toggle(api, tags, t, "ia·trabajando", True)
@@ -153,11 +175,17 @@ def run(api, goal, repo, st, tags, t, mode):
             feedback = ""
             for attempt in range(1, MAX_ROUNDS + 1):
                 tag = f" · ronda {attempt}" if MAX_ROUNDS > 1 else ""
-                ok, out = ask(f"{ctx}\n{task_txt}\n(Las notas pueden incluir un plan ya aprobado: síguelo.)\n{feedback}"
-                              f"Trabajas en la rama {branch} de un git worktree. Haz commits pequeños con mensaje claro, sin firmas de IA. "
-                              "No hagas push, no toques .env ni secretos, no borres nada fuera de lo necesario. Verifica con los tests/build del repo si existen. "
-                              "Termina con un resumen en español: qué cambió, cómo verificarlo y qué queda pendiente.", "acceptEdits", MODELS["exec"], "exec", wt)
-                sections.append((f"Resultado de la IA · {MODELS['exec']}{tag}", ok, out))
+                exec_prompt = (f"{ctx}\n{task_txt}\n(Las notas pueden incluir un plan ya aprobado: síguelo.)\n{feedback}"
+                               f"Trabajas en la rama {branch} de un git worktree. Haz commits pequeños con mensaje claro, sin firmas de IA. "
+                               "No hagas push, no toques .env ni secretos, no borres nada fuera de lo necesario. Verifica con los tests/build del repo si existen. "
+                               "Termina con un resumen en español: qué cambió, cómo verificarlo y qué queda pendiente.")
+                if runner == "opencode":
+                    ok, out = ask_opencode(exec_prompt, wt)
+                    who = f"OpenCode · {OC_MODEL}"
+                else:
+                    ok, out = ask(exec_prompt, "acceptEdits", MODELS["exec"], "exec", wt)
+                    who = MODELS["exec"]
+                sections.append((f"Resultado de la IA · {who}{tag}", ok, out))
                 if ok and subprocess.run(["git", "-C", str(wt), "status", "--porcelain"], capture_output=True, text=True).stdout.strip():
                     # headless sessions cannot get approval for git add/commit, so the dispatcher commits what the model left behind
                     subprocess.run(["git", "-C", str(wt), "add", "-A"], capture_output=True)

@@ -5,3 +5,4 @@ logs/
 cj
 .ntfy-topic
 __pycache__/
+.opencode-model
