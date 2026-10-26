@@ -101,7 +101,8 @@ def main():
             if verifiable:
                 print(f"{wt.name}: tarea {state}, {n} commits sin mergear")
             else:
-                print(f"{wt.name}: tarea {state}, no verificable ({r.stderr.strip() or 'git log falló'}); no se elimina")
+                err = next((l.strip() for l in r.stderr.splitlines() if l.strip()), "git log falló")
+                print(f"{wt.name}: tarea {state}, no verificable ({err}); no se elimina")
         if args.remove and tid in done and verifiable and n == 0:
             subprocess.run(["git", "-C", str(repo), "worktree", "remove", str(wt)])
             if not args.json:
