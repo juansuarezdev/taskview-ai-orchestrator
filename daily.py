@@ -59,7 +59,8 @@ def main():
         lines.append(f"En Review: {len(review)}" + (f" ({ai} de la IA)" if ai else ""))
     if not lines:
         return
-    subprocess.run([sys.executable, str(HERE / "notify.py"), f"Buenos días: {len(due)} para hoy", "\n".join(lines), "3"])
+    title = f"Buenos días: {len(due)} para hoy" if due else "Buenos días"
+    subprocess.run([sys.executable, str(HERE / "notify.py"), title, "\n".join(lines), "3"])
 
 
 if __name__ == "__main__":
