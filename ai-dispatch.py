@@ -6,7 +6,11 @@ Tag a task (not `para-mí`, status Backlog/TODO) in a project board with:
   ia·opencode  -> same as ia·ejecutar but OpenCode implements (free model opencode/deepseek-v4.1-flash-free); Opus still reviews
   ia·ejecutar  -> claude implements it in its own git worktree/branch `ai/t<id>`, never pushes, moves it to Review
 Models: plan = Opus, exec = Sonnet, then an automatic review by Opus (ia·hecho if approved, ia·cambios if not).
-Progress tags: ia·trabajando while running, then ia·plan-listo / ia·hecho / ia·cambios / ia·fallo.
+Plan/exec sessions delegate to subagents by model: `explorer` (Haiku, read-only search) and `tester` (Sonnet, runs tests).
+The review answers with a JSON schema (verdict + findings) instead of free text.
+Questions: a claude session that lacks information ends with `PREGUNTA: ...`; the task goes to Review with ia·pregunta and the
+session id in the note. Answer by writing `RESPUESTA: ...` below the `Sesión IA:` line and tag it ia·continuar: the session is resumed.
+Progress tags: ia·trabajando while running, then ia·plan-listo / ia·hecho / ia·cambios / ia·fallo / ia·pregunta.
 One task at a time (flock). Run every minute from launchd. `--dry-run` only lists.
 """
 import fcntl, json, os, re, subprocess, sys, time, urllib.request
@@ -20,9 +24,29 @@ WORKTREES = CODE / ".ai-worktrees"
 LOG = HERE / "logs/ai-dispatch.log"
 REPOS = {"Board M": "repo-m", "Board G": "repo-g", "Board E": "repo-e", "TaskView": "taskview-community", "Board R": "repo-r"}
 TRIGGERS = {"ia·plan": ("plan", "claude"), "ia·ejecutar": ("exec", "claude"), "ia·opencode": ("exec", "opencode")}
-PROGRESS = {"ia·trabajando": "#f59e0b", "ia·plan-listo": "#3b82f6", "ia·hecho": "#22c55e", "ia·cambios": "#eab308", "ia·fallo": "#ef4444"}
-TRIGGER_COLORS = {"ia·plan": "#3b82f6", "ia·ejecutar": "#f97316", "ia·opencode": "#10b981"}
-MODELS = {"plan": "claude-opus-5-5", "exec": "claude-sonnet-5-5", "review": "claude-opus-5-5"}
+CONTINUE = "ia·continuar"  # set by the user on a Review task after writing RESPUESTA: in the note
+PROGRESS = {"ia·trabajando": "#f59e0b", "ia·plan-listo": "#3b82f6", "ia·hecho": "#22c55e", "ia·cambios": "#eab308", "ia·fallo": "#ef4444",
+            "ia·pregunta": "#a855f7"}
+TRIGGER_COLORS = {"ia·plan": "#3b82f6", "ia·ejecutar": "#f97316", "ia·opencode": "#10b981", CONTINUE: "#a855f7"}
+MODELS = {"plan": "claude-opus-5-5", "exec": "claude-sonnet-5-5", "review": "claude-opus-5-5",
+          "explore": "claude-haiku-5-5", "test": "claude-sonnet-5-5"}  # explore/test = subagent models
+EXPLORER = {"description": "Busca archivos, símbolos y usos en el repo. Úsalo para localizar código antes de editar o planificar.",
+            "prompt": "Eres un buscador de código de solo lectura. Localiza lo que te pidan y responde con rutas, líneas y fragmentos mínimos. No propongas cambios.",
+            "tools": ["Read", "Glob", "Grep"], "model": MODELS["explore"]}
+TESTER = {"description": "Ejecuta los tests, el build o el linter del repo y resume los fallos. Úsalo para verificar cambios.",
+          "prompt": "Ejecuta lo que te pidan (tests, build, lint) y devuelve solo: comando, resultado y las líneas decisivas de cada fallo. No edites archivos.",
+          "tools": ["Read", "Glob", "Grep", "Bash"], "model": MODELS["test"]}
+PLAN_AGENTS = {"explorer": EXPLORER}
+EXEC_AGENTS = {"explorer": EXPLORER, "tester": TESTER}
+DELEGATE = "Delega la búsqueda de código en el subagente `explorer`" + " y la ejecución de tests/build en el subagente `tester`; tú decides y editas.\n"
+ASK_RULE = ("Si te falta información imprescindible que no puedes deducir del repo ni de la tarea, no adivines: termina tu respuesta con una línea "
+            "`PREGUNTA: <una pregunta concreta>` y no hagas más cambios.\n")
+REVIEW_SCHEMA = {"type": "object", "required": ["veredicto", "resumen", "hallazgos"], "properties": {
+    "veredicto": {"enum": ["APROBADO", "CAMBIOS"]}, "resumen": {"type": "string"},
+    "hallazgos": {"type": "array", "items": {"type": "object", "required": ["archivo", "severidad", "descripcion"], "properties": {
+        "archivo": {"type": "string"}, "linea": {"type": "integer"}, "severidad": {"enum": ["alta", "media", "baja"]},
+        "descripcion": {"type": "string"}}}}}}
+SESSION_RE = re.compile(r"Sesión IA: (\S+) mode=(\w+) runner=(\w+)")
 MAX_ROUNDS = 3  # execute + review rounds when the review asks for changes
 BUDGET = {"plan": "2", "exec": "5", "review": "2"}
 TIMEOUT = {"plan": 15 * 60, "exec": 40 * 60, "review": 15 * 60}
@@ -67,10 +91,10 @@ def main():
         for name, color in {**TRIGGER_COLORS, **PROGRESS}.items():  # make the tags exist so they can be picked in the UI
             if name not in tags and not dry:
                 tags[name] = api("POST", "/module/tags", {"name": name, "color": color, "goalId": gid})["id"]
-        if not any(n in tags for n in TRIGGERS):
+        if not any(n in tags for n in (*TRIGGERS, CONTINUE)):
             continue
         st = {s["name"]: s["id"] for s in api("POST", "/module/kanban/fetch-statuses", {"goalId": gid})}
-        for sname in ("TODO", "Backlog"):
+        for sname in ("TODO", "Backlog", "Review"):
             if sname not in st:
                 continue
             cur = "null"
@@ -79,6 +103,20 @@ def main():
                 for t in r["tasks"]:
                     have = set(t.get("tags") or [])
                     if tags.get("para-mí") in have:
+                        continue
+                    if sname == "Review":  # only answered questions are picked up from Review
+                        if tags.get(CONTINUE) not in have:
+                            continue
+                        res, err = parse_resume(t.get("note") or "")
+                        if dry:
+                            print(f"[{g['name']}] t{t['id']} continuar: {err or res['mode'] + '/' + res['runner']}")
+                        elif err:
+                            toggle(api, tags, t, CONTINUE, False)
+                            log(f"continue t{t['id']} skipped: {err}")
+                            subprocess.run([sys.executable, str(HERE / "notify.py"), f"IA: {t['description'][:60]}", f"No puedo continuar: {err}", "3"])
+                        else:
+                            run(api, g, repo, st, tags, t, res["mode"], CONTINUE, res["runner"], res)
+                            return
                         continue
                     hit = next(((n, m, rn) for n, (m, rn) in TRIGGERS.items() if tags.get(n) in have), None)
                     if hit:
@@ -111,17 +149,49 @@ def board_context(api, goal, st, t):
             + ("Otras tareas del proyecto (solo contexto, no son tu tarea):\n" + "\n".join(sib) + "\n" if sib else ""))
 
 
-def ask(prompt, perm, model, mode, cwd):
-    """Run one claude -p session; returns (ok, text)."""
+def parse_resume(note):
+    """Session id/mode/runner from the last `Sesión IA:` line plus the user's `RESPUESTA:` below it; returns (dict, error)."""
+    found = list(SESSION_RE.finditer(note))
+    if not found:
+        return None, "no hay línea 'Sesión IA:' en la nota"
+    m = found[-1]
+    a = re.search(r"RESPUESTA:\s*(.+)", note[m.end():], re.S)
+    if not a:
+        return None, "falta 'RESPUESTA: ...' debajo de la línea 'Sesión IA:'"
+    return {"sid": m.group(1), "mode": m.group(2), "runner": m.group(3), "answer": a.group(1).strip()}, None
+
+
+def question(text):
+    """The model's `PREGUNTA:` line (and what follows), or None."""
+    found = list(re.finditer(r"^\W*PREGUNTA:\s*", text, re.M))
+    return text[found[-1].end():].strip() if found else None
+
+
+def fmt_review(so):
+    lines = [f"VEREDICTO: {so['veredicto']}", so.get("resumen", "")]
+    for h in so.get("hallazgos", []):
+        lines.append(f"- [{h['severidad']}] {h['archivo']}{':' + str(h['linea']) if h.get('linea') else ''}: {h['descripcion']}")
+    return "\n".join(lines)
+
+
+def ask(prompt, perm, model, mode, cwd, agents=None, schema=None, resume=None):
+    """Run one claude -p session; returns (ok, text, session_id, structured_output)."""
+    extra = [*(["--agents", json.dumps(agents)] if agents else []), *(["--json-schema", json.dumps(schema)] if schema else []),
+             *(["--resume", resume] if resume else [])]
     try:
         p = subprocess.run(["claude", "-p", prompt, "--model", model, "--permission-mode", perm, "--max-budget-usd", BUDGET[mode],
+                            "--output-format", "json", *extra,
                             "--allowedTools", *ALLOWED, *(WEB if perm == "plan" else []), "--disallowedTools", *DENIED],
                            cwd=cwd, env={**os.environ, "TASKVIEW_NOHOOK": "1"}, capture_output=True, text=True, timeout=TIMEOUT[mode])
-        return p.returncode == 0, (p.stdout or p.stderr or "").strip()
     except subprocess.TimeoutExpired:
-        return False, f"Timeout ({TIMEOUT[mode] // 60} min)."
+        return False, f"Timeout ({TIMEOUT[mode] // 60} min).", None, None
     except Exception as e:
-        return False, f"Error: {e}"
+        return False, f"Error: {e}", None, None
+    try:
+        o = json.loads(p.stdout)
+    except ValueError:  # not JSON (crash before output): keep whatever text there is
+        return False, (p.stdout or p.stderr or "").strip(), None, None
+    return p.returncode == 0 and not o.get("is_error"), (o.get("result") or "").strip(), o.get("session_id"), o.get("structured_output")
 
 
 OC_BIN = str(Path.home() / ".opencode/bin/opencode")  # launchd PATH does not include it
@@ -144,11 +214,12 @@ def ask_opencode(prompt, cwd):
         return False, f"Error: {e}"
 
 
-def run(api, goal, repo, st, tags, t, mode, trig, runner="claude"):
+def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
     tid = t["id"]
     log(f"start t{tid} {mode} [{goal['name']}] {t['description']}")
     toggle(api, tags, t, trig, False)
     toggle(api, tags, t, "ia·trabajando", True)
+    toggle(api, tags, t, "ia·pregunta", False)
     api("PATCH", "/module/tasks", {"id": tid, "statusId": st["In Progress"]})
     note = t.get("note") or ""
     base = EXTRA_ROOTS.get(repo, CODE / repo)
@@ -156,7 +227,7 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude"):
     branch, wt = f"ai/t{tid}", WORKTREES / f"{repo}-t{tid}"
     ctx = board_context(api, goal, st, t)
     stamp = lambda: time.strftime("%F %H:%M")
-    sections, ok, verdict_ok = [], False, True
+    sections, ok, verdict_ok, asked = [], False, True, None  # asked = session id of a question waiting for the user
     try:
         if in_place:
             if mode != "plan":
@@ -168,24 +239,37 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude"):
             subprocess.run(["git", "-C", str(base), "worktree", "add", "-b", branch, str(wt), start], check=True, capture_output=True)
         task_txt = f"Tarea de TaskView #{tid}: {t['description']}\n\nNotas de la tarea:\n{note}\n"
         if mode == "plan":
-            ok, out = ask(f"{ctx}\n{task_txt}\nAnaliza el repo y escribe un plan de implementación concreto: archivos a tocar, pasos, riesgos y cómo verificarlo. "
-                          "NO modifiques nada. Responde en español, conciso, en markdown.", "plan", MODELS["plan"], "plan", wt)
+            if resume:
+                prompt = f"Respuesta del usuario a tu pregunta:\n{resume['answer']}\n\nContinúa y entrega el plan completo."
+            else:
+                prompt = (f"{ctx}\n{task_txt}\nAnaliza el repo y escribe un plan de implementación concreto: archivos a tocar, pasos, riesgos y cómo verificarlo. "
+                          f"NO modifiques nada. {DELEGATE.replace(' y la ejecución de tests/build en el subagente `tester`', '')}{ASK_RULE}Responde en español, conciso, en markdown.")
+            ok, out, sid, _ = ask(prompt, "plan", MODELS["plan"], "plan", wt, agents=PLAN_AGENTS, resume=resume and resume["sid"])
             sections.append((f"Plan de la IA · {MODELS['plan']}", ok, out))
+            if ok and question(out):
+                asked = sid
         else:
             feedback = ""
             for attempt in range(1, MAX_ROUNDS + 1):
                 tag = f" · ronda {attempt}" if MAX_ROUNDS > 1 else ""
-                exec_prompt = (f"{ctx}\n{task_txt}\n(Las notas pueden incluir un plan ya aprobado: síguelo.)\n{feedback}"
-                               f"Trabajas en la rama {branch} de un git worktree. Haz commits pequeños con mensaje claro, sin firmas de IA. "
+                exec_prompt = (f"{ctx}\n{task_txt}\n(Las notas pueden incluir un plan ya aprobado: síguelo.)\n{feedback}{DELEGATE}"
+                               f"{ASK_RULE if runner == 'claude' else ''}Trabajas en la rama {branch} de un git worktree. Haz commits pequeños con mensaje claro, sin firmas de IA. "
                                "No hagas push, no toques .env ni secretos, no borres nada fuera de lo necesario. Verifica con los tests/build del repo si existen. "
                                "Termina con un resumen en español: qué cambió, cómo verificarlo y qué queda pendiente.")
+                sid = None
                 if runner == "opencode":
                     ok, out = ask_opencode(exec_prompt, wt)
                     who = f"OpenCode · {OC_MODEL}"
                 else:
-                    ok, out = ask(exec_prompt, "acceptEdits", MODELS["exec"], "exec", wt)
+                    if resume and attempt == 1:  # continue the session that asked, with the user's answer
+                        exec_prompt = f"Respuesta del usuario a tu pregunta:\n{resume['answer']}\n\nContinúa con la tarea y termina con el resumen."
+                    ok, out, sid, _ = ask(exec_prompt, "acceptEdits", MODELS["exec"], "exec", wt, agents=EXEC_AGENTS,
+                                          resume=resume["sid"] if resume and attempt == 1 else None)
                     who = MODELS["exec"]
                 sections.append((f"Resultado de la IA · {who}{tag}", ok, out))
+                if ok and runner == "claude" and question(out):
+                    asked = sid  # leave the worktree as is; the resumed session keeps working on it
+                    break
                 if ok and subprocess.run(["git", "-C", str(wt), "status", "--porcelain"], capture_output=True, text=True).stdout.strip():
                     # headless sessions cannot get approval for git add/commit, so the dispatcher commits what the model left behind
                     subprocess.run(["git", "-C", str(wt), "add", "-A"], capture_output=True)
@@ -194,10 +278,14 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude"):
                     sections.append(("Commit del dispatcher", c.returncode == 0, c.stdout + c.stderr or t["description"][:72]))
                 if not ok:
                     break
-                rok, rout = ask(f"{ctx}\n{task_txt}\nOtra IA implementó esta tarea en la rama {branch} (worktree actual). Revisa con `git diff main...HEAD` y `git log main..HEAD`: "
+                rok, rout, _, so = ask(f"{ctx}\n{task_txt}\nOtra IA implementó esta tarea en la rama {branch} (worktree actual). Revisa con `git diff main...HEAD` y `git log main..HEAD`: "
                                 "¿cumple lo pedido?, ¿bugs, casos límite, seguridad o cambios fuera de alcance?, ¿faltan tests? NO modifiques nada. "
-                                "Empieza con una línea `VEREDICTO: APROBADO` o `VEREDICTO: CAMBIOS`, y después hallazgos concretos con archivo y línea.", "plan", MODELS["review"], "review", wt)
-                verdict_ok = rok and "VEREDICTO: APROBADO" in rout
+                                "Responde con el veredicto y los hallazgos concretos (archivo y línea) en el esquema pedido.",
+                                      "plan", MODELS["review"], "review", wt, agents=PLAN_AGENTS, schema=REVIEW_SCHEMA)
+                if so:
+                    verdict_ok, rout = rok and so["veredicto"] == "APROBADO", fmt_review(so)
+                else:  # no structured output: fall back to the text
+                    verdict_ok = rok and "VEREDICTO: APROBADO" in rout
                 sections.append((f"Revisión · {MODELS['review']}{tag}", rok, rout))
                 if verdict_ok or not rok:
                     break
@@ -208,13 +296,16 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude"):
     body = "".join(f"\n\n--- {h} ({stamp()}){'' if k else ' — FALLÓ'} ---\n{o[-6000:]}" for h, k, o in sections)
     if mode == "exec":
         body += f"\nRama: {branch} · worktree: {wt}"
-    done_tag = "ia·fallo" if not ok else ("ia·plan-listo" if mode == "plan" else ("ia·hecho" if verdict_ok else "ia·cambios"))
+    if asked:
+        body += (f"\n\nSesión IA: {asked} mode={mode} runner={runner}\n"
+                 "Para responder: escribe `RESPUESTA: ...` debajo de esta línea y pon la etiqueta ia·continuar.")
+    done_tag = "ia·fallo" if not ok else ("ia·pregunta" if asked else "ia·plan-listo" if mode == "plan" else ("ia·hecho" if verdict_ok else "ia·cambios"))
     toggle(api, tags, t, "ia·trabajando", False)
     toggle(api, tags, t, done_tag, True)
     api("PATCH", "/module/tasks", {"id": tid, "note": f"{note}{body}".strip(), "statusId": st["Review"]})
     log(f"end t{tid} ok={ok} {done_tag}")
     msg = {"ia·fallo": "Revisa la nota de la tarea", "ia·plan-listo": "Plan listo para revisar", "ia·hecho": "Implementada y aprobada por la revisión",
-           "ia·cambios": "Implementada, la revisión pide cambios"}[done_tag]
+           "ia·cambios": "Implementada, la revisión pide cambios", "ia·pregunta": "La IA tiene una pregunta"}[done_tag]
     subprocess.run([sys.executable, str(HERE / "notify.py"), f"IA: {t['description'][:60]}", msg, "4" if done_tag in ("ia·fallo", "ia·cambios") else "3"])
 
 
