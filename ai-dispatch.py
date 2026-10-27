@@ -11,6 +11,7 @@ The review answers with a JSON schema (verdict + findings) instead of free text.
 Questions: a claude session that lacks information ends with `PREGUNTA: ...`; the task goes to Review with ia·pregunta and the
 session id in the note. Answer by writing `RESPUESTA: ...` below the `Sesión IA:` line and tag it ia·continuar: the session is resumed.
 Progress tags: ia·trabajando while running, then ia·plan-listo / ia·hecho / ia·cambios / ia·fallo / ia·pregunta.
+Packs (ia-packs.json): ia·pack·analizar / implementar / barato / silencioso = trigger + email in one tag.
 Tag ia·correo on a task: when its run ends the result is emailed (send-mail) and the tag is removed.
 One task at a time (flock). Run every minute from launchd. `--dry-run` only lists.
 """
@@ -25,13 +26,17 @@ WORKTREES = CODE / ".ai-worktrees"
 LOG = HERE / "logs/ai-dispatch.log"
 REPOS = {"Board M": "repo-m", "Board G": "repo-g", "Board E": "repo-e", "TaskView": "taskview-community", "Board R": "repo-r"}
 TRIGGERS = {"ia·plan": ("plan", "claude"), "ia·ejecutar": ("exec", "claude"), "ia·opencode": ("exec", "opencode")}
+# packs (ia-packs.json): one tag = a trigger + optional mail, so tasks need a single tag; they win over loose triggers
+PACKS = json.loads((HERE / "ia-packs.json").read_text()) if (HERE / "ia-packs.json").exists() else {}
+TRIGGERS = {**{n: TRIGGERS[p["trigger"]] for n, p in PACKS.items()}, **TRIGGERS}
 MAIL = "ia·correo"  # per-task: email the result to MAIL_TO when the run ends, then the tag is removed
 MAIL_TO = "you@example.com"
 HIMALAYA_DIR = "/opt/homebrew/bin"  # launchd PATH does not include it
 CONTINUE = "ia·continuar"  # set by the user on a Review task after writing RESPUESTA: in the note
 PROGRESS = {"ia·trabajando": "#f59e0b", "ia·plan-listo": "#3b82f6", "ia·hecho": "#22c55e", "ia·cambios": "#eab308", "ia·fallo": "#ef4444",
             "ia·pregunta": "#a855f7"}
-TRIGGER_COLORS = {"ia·plan": "#3b82f6", "ia·ejecutar": "#f97316", "ia·opencode": "#10b981", CONTINUE: "#a855f7", MAIL: "#0ea5e9"}
+TRIGGER_COLORS = {"ia·plan": "#3b82f6", "ia·ejecutar": "#f97316", "ia·opencode": "#10b981", CONTINUE: "#a855f7", MAIL: "#0ea5e9",
+                  **{n: p["color"] for n, p in PACKS.items()}}
 MODELS = {"plan": "claude-opus-5-5", "exec": "claude-sonnet-5-5", "review": "claude-opus-5-5",
           "explore": "claude-haiku-5-5", "test": "claude-sonnet-5-5"}  # explore/test = subagent models
 EXPLORER = {"description": "Busca archivos, símbolos y usos en el repo. Úsalo para localizar código antes de editar o planificar.",
@@ -230,6 +235,8 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
     tid = t["id"]
     log(f"start t{tid} {mode} [{goal['name']}] {t['description']}")
     toggle(api, tags, t, trig, False)
+    if PACKS.get(trig, {}).get("mail"):
+        toggle(api, tags, t, MAIL, True)
     toggle(api, tags, t, "ia·trabajando", True)
     toggle(api, tags, t, "ia·pregunta", False)
     api("PATCH", "/module/tasks", {"id": tid, "statusId": st["In Progress"]})
