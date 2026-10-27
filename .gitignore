@@ -6,3 +6,4 @@ cj
 .ntfy-topic
 __pycache__/
 .opencode-model
+.api-token

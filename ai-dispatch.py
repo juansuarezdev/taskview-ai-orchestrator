@@ -13,7 +13,7 @@ session id in the note. Answer by writing `RESPUESTA: ...` below the `Sesión IA
 Progress tags: ia·trabajando while running, then ia·plan-listo / ia·hecho / ia·cambios / ia·fallo / ia·pregunta.
 One task at a time (flock). Run every minute from launchd. `--dry-run` only lists.
 """
-import fcntl, json, os, re, subprocess, sys, time, urllib.request
+import fcntl, html, json, os, re, subprocess, sys, time, urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -69,6 +69,11 @@ def call(method, path, body=None, tok=None):
     req = urllib.request.Request(API + path, method=method, headers=h, data=json.dumps(body).encode() if body is not None else None)
     return json.load(urllib.request.urlopen(req, timeout=10))
 
+def token(c):
+    """Scoped API token (selfhost/.api-token, revocable from the web UI) when present, else the password login."""
+    f = HERE / ".api-token"
+    return f.read_text().strip() if f.exists() else call("POST", "/module/auth/login", {"login": c["login"], "password": c["password"]})["access"]
+
 
 def main():
     dry = "--dry-run" in sys.argv
@@ -78,7 +83,7 @@ def main():
     except BlockingIOError:
         return
     c = dict(l.strip().split("=", 1) for l in (HERE / ".credentials").read_text().splitlines() if "=" in l)
-    tok = call("POST", "/module/auth/login", {"login": c["login"], "password": c["password"]})["access"]
+    tok = token(c)
     api = lambda m, p, b=None: call(m, p, b, tok)["response"]
 
     for g in api("GET", "/module/goals"):
@@ -155,10 +160,13 @@ def parse_resume(note):
     if not found:
         return None, "no hay línea 'Sesión IA:' en la nota"
     m = found[-1]
-    a = re.search(r"RESPUESTA:\s*(.+)", note[m.end():], re.S)
+    # the web note editor saves HTML: turn it back into plain text before looking for the answer
+    tail = html.unescape(re.sub(r"<[^>]+>", " ", re.sub(r"</p>|<br\s*/?>", "\n", note[m.end():])))
+    answers = re.findall(r"RESPUESTA:\s*(.+?)(?=\n\s*RESPUESTA:|\Z)", tail, re.S)
+    a = answers[-1].strip() if answers else None
     if not a:
         return None, "falta 'RESPUESTA: ...' debajo de la línea 'Sesión IA:'"
-    return {"sid": m.group(1), "mode": m.group(2), "runner": m.group(3), "answer": a.group(1).strip()}, None
+    return {"sid": m.group(1), "mode": m.group(2), "runner": m.group(3), "answer": a}, None
 
 
 def question(text):
@@ -298,7 +306,7 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
         body += f"\nRama: {branch} · worktree: {wt}"
     if asked:
         body += (f"\n\nSesión IA: {asked} mode={mode} runner={runner}\n"
-                 "Para responder: escribe `RESPUESTA: ...` debajo de esta línea y pon la etiqueta ia·continuar.")
+                 "Para responder: escribe «RESPUESTA» seguido de dos puntos y tu texto debajo de esta línea, y pon la etiqueta ia·continuar.")
     done_tag = "ia·fallo" if not ok else ("ia·pregunta" if asked else "ia·plan-listo" if mode == "plan" else ("ia·hecho" if verdict_ok else "ia·cambios"))
     toggle(api, tags, t, "ia·trabajando", False)
     toggle(api, tags, t, done_tag, True)

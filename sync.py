@@ -32,6 +32,11 @@ def call(method, path, body=None, tok=None):
                                  data=json.dumps(body).encode() if body is not None else None)
     return json.load(urllib.request.urlopen(req))
 
+def token(c):
+    """Scoped API token (selfhost/.api-token, revocable from the web UI) when present, else the password login."""
+    f = HERE / ".api-token"
+    return f.read_text().strip() if f.exists() else call("POST", "/module/auth/login", {"login": c["login"], "password": c["password"]})["access"]
+
 
 def sh(*cmd):
     return subprocess.run(cmd, capture_output=True, text=True).stdout.strip()
@@ -39,7 +44,7 @@ def sh(*cmd):
 
 def main():
     c = creds()
-    tok = call("POST", "/module/auth/login", {"login": c["login"], "password": c["password"]})["access"]
+    tok = token(c)
     api = lambda m, p, b=None: call(m, p, b, tok)["response"]
 
     goals = {g["name"]: g for g in api("GET", "/module/goals") if not g["archive"]}

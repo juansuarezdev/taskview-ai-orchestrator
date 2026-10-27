@@ -20,12 +20,17 @@ def call(method, path, body=None, tok=None):
     req = urllib.request.Request(API + path, method=method, headers=h, data=json.dumps(body).encode() if body is not None else None)
     return json.load(urllib.request.urlopen(req, timeout=10))
 
+def token(c):
+    """Scoped API token (selfhost/.api-token, revocable from the web UI) when present, else the password login."""
+    f = HERE / ".api-token"
+    return f.read_text().strip() if f.exists() else call("POST", "/module/auth/login", {"login": c["login"], "password": c["password"]})["access"]
+
 
 def main():
     # housekeeping: drop worktrees and ai/ branches of finished work (merged PRs / Done tasks)
     subprocess.run([sys.executable, str(HERE / "ai-clean.py"), "--remove"], capture_output=True)
     c = dict(l.strip().split("=", 1) for l in (HERE / ".credentials").read_text().splitlines() if "=" in l)
-    tok = call("POST", "/module/auth/login", {"login": c["login"], "password": c["password"]})["access"]
+    tok = token(c)
     api = lambda m, p, b=None: call(m, p, b, tok)["response"]
     today = time.strftime("%Y-%m-%d")
     alltags = api("GET", "/module/tags")

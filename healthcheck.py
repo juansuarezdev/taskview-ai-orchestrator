@@ -3,9 +3,11 @@
 
 - API down: try `docker compose up -d` (Docker daemon permitting).
 - Latest DB backup tiny (< 1 KB, an empty gzip is 20 bytes): rerun backup.sh.
+- Latest backup less than half the size of the previous one (data loss?): alert.
+- Once a week: restore the latest backup into a throwaway Postgres (restore-test.sh) and alert if it does not restore.
 - Anything still wrong afterwards: macOS notification.
 """
-import subprocess, sys, urllib.error, urllib.request
+import subprocess, sys, time, urllib.error, urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).parent
@@ -30,6 +32,17 @@ def api_up():
 def latest_backup_size():
     files = sorted(BACKUPS.glob("taskview-*.sql.gz"))
     return files[-1].stat().st_size if files else 0
+
+
+def backup_shrank():
+    files = sorted(BACKUPS.glob("taskview-*.sql.gz"))
+    return len(files) > 1 and files[-1].stat().st_size < files[-2].stat().st_size / 2
+
+
+def restore_due():
+    """True when the last weekly restore test is older than 7 days; the marker is touched by a passing test."""
+    marker = HERE / "logs/.restore-test"
+    return not marker.exists() or time.time() - marker.stat().st_mtime > 7 * 86400
 
 
 def ntfy_up():
@@ -59,6 +72,13 @@ def main():
         sh("bash", str(HERE / "backup.sh"))
         if latest_backup_size() < 1024:
             problems.append("el último backup está vacío")
+    if api_up() and backup_shrank():
+        problems.append("el backup de hoy es menos de la mitad que el anterior")
+    if api_up() and restore_due():
+        if sh("bash", str(HERE / "restore-test.sh")).returncode == 0:
+            (HERE / "logs/.restore-test").touch()
+        else:
+            problems.append("el backup no se restaura bien (restore-test.sh)")
     if problems:
         notify("Fallo: " + " y ".join(problems))
         return 1

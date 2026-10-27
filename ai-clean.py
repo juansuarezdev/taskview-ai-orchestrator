@@ -29,6 +29,11 @@ def call(method, path, body=None, tok=None):
 
 REPO_NAMES = ["repo-m", "repo-g", "repo-e", "taskview-community"]
 
+def token(c):
+    """Scoped API token (selfhost/.api-token, revocable from the web UI) when present, else the password login."""
+    f = HERE / ".api-token"
+    return f.read_text().strip() if f.exists() else call("POST", "/module/auth/login", {"login": c["login"], "password": c["password"]})["access"]
+
 
 def git(repo, *a):
     return subprocess.run(["git", "-C", str(repo), *a], capture_output=True, text=True)
@@ -79,7 +84,7 @@ def main():
     ap.add_argument("--json", action="store_true", help="print the worktree list as JSON")
     args = ap.parse_args()
     c = dict(l.strip().split("=", 1) for l in (HERE / ".credentials").read_text().splitlines() if "=" in l)
-    tok = call("POST", "/module/auth/login", {"login": c["login"], "password": c["password"]})["access"]
+    tok = token(c)
     api = lambda m, p, b=None: call(m, p, b, tok)["response"]
     done = set()
     for g in api("GET", "/module/goals"):
