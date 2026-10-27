@@ -27,6 +27,7 @@ REPOS = {"Board M": "repo-m", "Board G": "repo-g", "Board E": "repo-e", "TaskVie
 TRIGGERS = {"ia·plan": ("plan", "claude"), "ia·ejecutar": ("exec", "claude"), "ia·opencode": ("exec", "opencode")}
 MAIL = "ia·correo"  # per-task: email the result to MAIL_TO when the run ends, then the tag is removed
 MAIL_TO = "you@example.com"
+HIMALAYA_DIR = "/opt/homebrew/bin"  # launchd PATH does not include it
 CONTINUE = "ia·continuar"  # set by the user on a Review task after writing RESPUESTA: in the note
 PROGRESS = {"ia·trabajando": "#f59e0b", "ia·plan-listo": "#3b82f6", "ia·hecho": "#22c55e", "ia·cambios": "#eab308", "ia·fallo": "#ef4444",
             "ia·pregunta": "#a855f7"}
@@ -326,7 +327,7 @@ def mail_result(api, tags, t, msg, body, done_tag):
     """Email the outcome of one run; the tag is removed only when the mail went out."""
     text = f"{t['description']}\n{msg} ({done_tag})\n{body[-8000:]}"
     p = subprocess.run([str(Path.home() / ".local/bin/send-mail"), "--to", MAIL_TO, "--subject", f"IA: {t['description'][:70]} — {msg}", "--text", text],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, env={**os.environ, "PATH": f"{HIMALAYA_DIR}:{os.environ.get('PATH', '')}"})
     log(f"mail t{t['id']} rc={p.returncode} {(p.stdout + p.stderr).strip()[-200:]}")
     if p.returncode == 0:
         toggle(api, tags, t, MAIL, False)
