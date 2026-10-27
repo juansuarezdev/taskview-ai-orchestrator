@@ -11,6 +11,7 @@ The review answers with a JSON schema (verdict + findings) instead of free text.
 Questions: a claude session that lacks information ends with `PREGUNTA: ...`; the task goes to Review with ia·pregunta and the
 session id in the note. Answer by writing `RESPUESTA: ...` below the `Sesión IA:` line and tag it ia·continuar: the session is resumed.
 Progress tags: ia·trabajando while running, then ia·plan-listo / ia·hecho / ia·cambios / ia·fallo / ia·pregunta.
+Tag ia·correo on a task: when its run ends the result is emailed (send-mail) and the tag is removed.
 One task at a time (flock). Run every minute from launchd. `--dry-run` only lists.
 """
 import fcntl, html, json, os, re, subprocess, sys, time, urllib.request
@@ -24,10 +25,12 @@ WORKTREES = CODE / ".ai-worktrees"
 LOG = HERE / "logs/ai-dispatch.log"
 REPOS = {"Board M": "repo-m", "Board G": "repo-g", "Board E": "repo-e", "TaskView": "taskview-community", "Board R": "repo-r"}
 TRIGGERS = {"ia·plan": ("plan", "claude"), "ia·ejecutar": ("exec", "claude"), "ia·opencode": ("exec", "opencode")}
+MAIL = "ia·correo"  # per-task: email the result to MAIL_TO when the run ends, then the tag is removed
+MAIL_TO = "you@example.com"
 CONTINUE = "ia·continuar"  # set by the user on a Review task after writing RESPUESTA: in the note
 PROGRESS = {"ia·trabajando": "#f59e0b", "ia·plan-listo": "#3b82f6", "ia·hecho": "#22c55e", "ia·cambios": "#eab308", "ia·fallo": "#ef4444",
             "ia·pregunta": "#a855f7"}
-TRIGGER_COLORS = {"ia·plan": "#3b82f6", "ia·ejecutar": "#f97316", "ia·opencode": "#10b981", CONTINUE: "#a855f7"}
+TRIGGER_COLORS = {"ia·plan": "#3b82f6", "ia·ejecutar": "#f97316", "ia·opencode": "#10b981", CONTINUE: "#a855f7", MAIL: "#0ea5e9"}
 MODELS = {"plan": "claude-opus-5-5", "exec": "claude-sonnet-5-5", "review": "claude-opus-5-5",
           "explore": "claude-haiku-5-5", "test": "claude-sonnet-5-5"}  # explore/test = subagent models
 EXPLORER = {"description": "Busca archivos, símbolos y usos en el repo. Úsalo para localizar código antes de editar o planificar.",
@@ -315,6 +318,18 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
     msg = {"ia·fallo": "Revisa la nota de la tarea", "ia·plan-listo": "Plan listo para revisar", "ia·hecho": "Implementada y aprobada por la revisión",
            "ia·cambios": "Implementada, la revisión pide cambios", "ia·pregunta": "La IA tiene una pregunta"}[done_tag]
     subprocess.run([sys.executable, str(HERE / "notify.py"), f"IA: {t['description'][:60]}", msg, "4" if done_tag in ("ia·fallo", "ia·cambios") else "3"])
+    if tags.get(MAIL) in set(t.get("tags") or []):
+        mail_result(api, tags, t, msg, body, done_tag)
+
+
+def mail_result(api, tags, t, msg, body, done_tag):
+    """Email the outcome of one run; the tag is removed only when the mail went out."""
+    text = f"{t['description']}\n{msg} ({done_tag})\n{body[-8000:]}"
+    p = subprocess.run([str(Path.home() / ".local/bin/send-mail"), "--to", MAIL_TO, "--subject", f"IA: {t['description'][:70]} — {msg}", "--text", text],
+                       capture_output=True, text=True)
+    log(f"mail t{t['id']} rc={p.returncode} {(p.stdout + p.stderr).strip()[-200:]}")
+    if p.returncode == 0:
+        toggle(api, tags, t, MAIL, False)
 
 
 if __name__ == "__main__":
