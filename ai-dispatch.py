@@ -109,11 +109,12 @@ def main():
             continue
         st = {s["name"]: s["id"] for s in api("POST", "/module/kanban/fetch-statuses", {"goalId": gid})}
         for sname in ("TODO", "Backlog", "Review"):
-            if sname not in st:
+            col = "null" if sname == "Backlog" else st.get(sname)  # Backlog is not a status row: tasks with no status, addressed as `null`
+            if col is None:
                 continue
             cur = "null"
             while cur:
-                r = api("GET", f"/module/kanban/tasks/{gid}/{st[sname]}/{cur}")
+                r = api("GET", f"/module/kanban/tasks/{gid}/{col}/{cur}")
                 for t in r["tasks"]:
                     have = set(t.get("tags") or [])
                     if tags.get("para-mí") in have:
