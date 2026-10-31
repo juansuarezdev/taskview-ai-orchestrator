@@ -56,6 +56,7 @@ REVIEW_SCHEMA = {"type": "object", "required": ["veredicto", "resumen", "hallazg
         "archivo": {"type": "string"}, "linea": {"type": "integer"}, "severidad": {"enum": ["alta", "media", "baja"]},
         "descripcion": {"type": "string"}}}}}}
 SESSION_RE = re.compile(r"Sesión IA: (\S+) mode=(\w+) runner=(\w+)")
+CONTEXT_MIN = 80  # chars of note below which the task gets a pre-context pass
 MAX_ROUNDS = 3  # execute + review rounds when the review asks for changes
 BUDGET = {"plan": "2", "exec": "5", "review": "2"}
 TIMEOUT = {"plan": 15 * 60, "exec": 40 * 60, "review": 15 * 60}
@@ -241,6 +242,7 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
     toggle(api, tags, t, "ia·trabajando", True)
     toggle(api, tags, t, "ia·pregunta", False)
     api("PATCH", "/module/tasks", {"id": tid, "statusId": st["In Progress"]})
+    subprocess.run([sys.executable, str(HERE / "notify.py"), f"IA: {t['description'][:60]}", f"Empieza ({'plan' if mode == 'plan' else 'ejecución'}): pasa a En curso", "2"])
     note = t.get("note") or ""
     base = EXTRA_ROOTS.get(repo, CODE / repo)
     in_place = not (base / ".git").exists()  # no repo: no worktree, read-only analysis only
@@ -257,6 +259,13 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
             WORKTREES.mkdir(exist_ok=True)
             start = "main" if subprocess.run(["git", "-C", str(base), "rev-parse", "--verify", "main"], capture_output=True).returncode == 0 else "HEAD"
             subprocess.run(["git", "-C", str(base), "worktree", "add", "-b", branch, str(wt), start], check=True, capture_output=True)
+        if not resume and len(re.sub(r"<[^>]+>", " ", note).strip()) < CONTEXT_MIN:  # thin task: a cheap model gathers context first, fewer questions later
+            cok, cout, _, _ = ask(f"{ctx}\nTarea de TaskView #{tid}: {t['description']}\n\nLa tarea tiene poca descripción. Explora el repo (solo lectura) y escribe, en español y en "
+                                  "máximo 8 líneas, el contexto útil para quien la haga: archivos y módulos relevantes, estado actual y los supuestos razonables que tomarías. "
+                                  "No hagas preguntas ni modifiques nada.", "plan", MODELS["explore"], "plan", wt)
+            if cok and cout:
+                sections.append((f"Contexto previo · {MODELS['explore']}", True, cout))
+                note = f"{note}\n\nContexto previo:\n{cout}".strip()
         task_txt = f"Tarea de TaskView #{tid}: {t['description']}\n\nNotas de la tarea:\n{note}\n"
         if mode == "plan":
             if resume:
@@ -332,13 +341,17 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
 
 
 def mail_result(api, tags, t, msg, body, done_tag):
-    """Email the outcome of one run; the tag is removed only when the mail went out."""
+    """Email the outcome of one run (3 tries, the network can blip); the tag is removed only when the mail went out."""
     text = f"{t['description']}\n{msg} ({done_tag})\n{body[-8000:]}"
-    p = subprocess.run([str(Path.home() / ".local/bin/send-mail"), "--to", MAIL_TO, "--subject", f"IA: {t['description'][:70]} — {msg}", "--text", text],
-                       capture_output=True, text=True, env={**os.environ, "PATH": f"{HIMALAYA_DIR}:{os.environ.get('PATH', '')}"})
-    log(f"mail t{t['id']} rc={p.returncode} {(p.stdout + p.stderr).strip()[-200:]}")
-    if p.returncode == 0:
-        toggle(api, tags, t, MAIL, False)
+    cmd = [str(Path.home() / ".local/bin/send-mail"), "--to", MAIL_TO, "--subject", f"IA: {t['description'][:70]} — {msg}", "--text", text]
+    env = {**os.environ, "PATH": f"{HIMALAYA_DIR}:{os.environ.get('PATH', '')}"}
+    for attempt, wait in enumerate((0, 30, 90), 1):
+        time.sleep(wait)
+        p = subprocess.run(cmd, capture_output=True, text=True, env=env)
+        log(f"mail t{t['id']} try {attempt} rc={p.returncode} {(p.stdout + p.stderr).strip()[-200:]}")
+        if p.returncode == 0:
+            toggle(api, tags, t, MAIL, False)
+            return
 
 
 if __name__ == "__main__":

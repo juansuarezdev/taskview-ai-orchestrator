@@ -34,12 +34,13 @@ def main():
     api = lambda m, p, b=None: call(m, p, b, tok)["response"]
     today = time.strftime("%Y-%m-%d")
     alltags = api("GET", "/module/tags")
-    due, review, ai = [], [], 0
+    due, review, ai, top, asks = [], [], 0, [], 0
     for g in api("GET", "/module/goals"):
         if g.get("archive"):
             continue
         mine = next((t["id"] for t in alltags if t["goalId"] == g["id"] and t["name"] == "para-mí"), None)
         aitags = {t["id"] for t in alltags if t["goalId"] == g["id"] and t["name"] in ("ia·plan-listo", "ia·hecho", "ia·fallo")}
+        askt = next((t["id"] for t in alltags if t["goalId"] == g["id"] and t["name"] == "ia·pregunta"), None)
         for s in api("POST", "/module/kanban/fetch-statuses", {"goalId": g["id"]}):
             if s["name"] == "Done":
                 continue
@@ -53,6 +54,10 @@ def main():
                     end = ""
                 if mine in (t.get("tags") or []) and end and end <= today:
                     due.append(f"{t['description']} ({g['name']}{', vencida' if end < today else ''})")
+                if mine in (t.get("tags") or []) and s["name"] in ("TODO", "In Progress"):
+                    top.append((end or "9999", -(t.get("priorityId") or 1), t["description"], g["name"]))
+                if askt in (t.get("tags") or []):
+                    asks += 1
                 if s["name"] == "Review":
                     review.append(t["description"])
                     if aitags & set(t.get("tags") or []):
@@ -60,6 +65,11 @@ def main():
     lines = []
     if due:
         lines.append("Para hoy:\n- " + "\n- ".join(due[:8]))
+    top.sort()
+    if top:  # most urgent first: earliest date, then highest priority
+        lines.append("Top 3 tuyas:\n- " + "\n- ".join(f"{d} ({g})" for _, _, d, g in top[:3]))
+    if asks:
+        lines.append(f"La IA espera tu respuesta en {asks} tarjeta(s)")
     if review:
         lines.append(f"En Review: {len(review)}" + (f" ({ai} de la IA)" if ai else ""))
     if not lines:
