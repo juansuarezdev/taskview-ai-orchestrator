@@ -3,14 +3,17 @@
 
 - Tasks tagged `para-mí` (not done) due today or overdue.
 - What is waiting in Review and what the AI dispatcher did since yesterday.
+Also emails a fuller version (full lists, titles of AI results and questions) with send-mail.
 Also prunes finished ai/ worktrees and branches (ai-clean.py --remove).
 Run daily from launchd (com.example.taskview-daily).
 """
-import json, subprocess, sys, time, urllib.request
+import json, os, subprocess, sys, time, urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 API = "http://127.0.0.1:1725"
+MAIL_TO = "you@example.com"
+HIMALAYA_DIR = "/opt/homebrew/bin"  # launchd has a minimal PATH
 
 
 def call(method, path, body=None, tok=None):
@@ -35,6 +38,7 @@ def main():
     today = time.strftime("%Y-%m-%d")
     alltags = api("GET", "/module/tags")
     due, review, ai, top, asks = [], [], 0, [], 0
+    ai_done, ai_asks = [], []  # titles for the email
     for g in api("GET", "/module/goals"):
         if g.get("archive"):
             continue
@@ -58,10 +62,12 @@ def main():
                     top.append((end or "9999", -(t.get("priorityId") or 1), t["description"], g["name"]))
                 if askt in (t.get("tags") or []):
                     asks += 1
+                    ai_asks.append(f"{t['description']} ({g['name']})")
                 if s["name"] == "Review":
                     review.append(t["description"])
                     if aitags & set(t.get("tags") or []):
                         ai += 1
+                        ai_done.append(f"{t['description']} ({g['name']})")
     lines = []
     if due:
         lines.append("Para hoy:\n- " + "\n- ".join(due[:8]))
@@ -76,6 +82,26 @@ def main():
         return
     title = f"Buenos días: {len(due)} para hoy" if due else "Buenos días"
     subprocess.run([sys.executable, str(HERE / "notify.py"), title, "\n".join(lines), "3"])
+    mail_digest(title, due, top, ai_asks, ai_done, review)
+
+
+def mail_digest(title, due, top, ai_asks, ai_done, review):
+    """One morning email with everything, instead of waiting for one mail per task. Failure is logged, never raised."""
+    def block(head, items):
+        return f"{head} ({len(items)})\n" + "\n".join(f"- {i}" for i in items) if items else ""
+    parts = [
+        block("Para hoy o vencidas", due),
+        block("Top 3 tuyas", [f"{d} ({g})" for _, _, d, g in top[:3]]),
+        block("La IA espera tu respuesta", ai_asks),
+        block("Resultados de la IA en Review", ai_done),
+        block("Todo lo que hay en Review", review),
+    ]
+    body = "\n\n".join(p for p in parts if p)
+    env = {**os.environ, "PATH": f"{HIMALAYA_DIR}:{os.environ.get('PATH', '')}"}
+    p = subprocess.run([str(Path.home() / ".local/bin/send-mail"), "--to", MAIL_TO, "--subject", f"TaskView: {title}", "--text", body],
+                       capture_output=True, text=True, env=env)
+    if p.returncode != 0:
+        print("digest mail failed:", (p.stdout + p.stderr).strip()[-300:], file=sys.stderr)
 
 
 if __name__ == "__main__":
