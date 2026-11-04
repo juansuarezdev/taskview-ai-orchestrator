@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Morning digest + due-date reminders, sent to the phone through ntfy.
+"""Morning digest + due-date reminders, sent to the phone as a notification (notify.py).
 
 - Tasks tagged `para-mí` (not done) due today or overdue.
 - What is waiting in Review and what the AI dispatcher did since yesterday.

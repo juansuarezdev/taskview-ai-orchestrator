@@ -24,7 +24,7 @@ CODE = Path.home() / "Projects/code"
 EXTRA_ROOTS = {"repo-r": Path.home() / "Projects/repo-r"}  # boards whose folder lives outside ~/Projects/code (not a git repo: plan only)
 WORKTREES = CODE / ".ai-worktrees"
 LOG = HERE / "logs/ai-dispatch.log"
-REPOS = {"Board M": "repo-m", "Board G": "repo-g", "Board E": "repo-e", "TaskView": "taskview-community", "Board R": "repo-r", "Board GC": "repo-gc", "Board SB": "repo-sb"}
+REPOS = {"Board M": "repo-m", "Board G": "repo-g", "Board E": "repo-e", "TaskView": "taskview-community", "Board R": "repo-r", "Board GC": "repo-gc", "Board SB": "repo-sb", "local-model": "local-model"}
 TRIGGERS = {"ia·plan": ("plan", "claude"), "ia·ejecutar": ("exec", "claude"), "ia·opencode": ("exec", "opencode")}
 # packs (ia-packs.json): one tag = a trigger + optional mail, so tasks need a single tag; they win over loose triggers
 PACKS = json.loads((HERE / "ia-packs.json").read_text()) if (HERE / "ia-packs.json").exists() else {}
@@ -61,7 +61,7 @@ MAX_ROUNDS = 3  # execute + review rounds when the review asks for changes
 BUDGET = {"plan": "2", "exec": "5", "review": "2"}
 TIMEOUT = {"plan": 15 * 60, "exec": 40 * 60, "review": 15 * 60}
 ALLOWED = ["Read", "Glob", "Grep", "Edit", "Write", "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git add:*)",
-           "Bash(git commit:*)", "Bash(ls:*)", "Bash(npm:*)", "Bash(npx:*)", "Bash(pnpm:*)", "Bash(python3:*)", "Bash(node:*)"]
+           "Bash(git commit:*)", "Bash(ls:*)", "Bash(npm:*)", "Bash(npx:*)", "Bash(pnpm:*)", "Bash(python3:*)", "Bash(node:*)", "Bash(send-mail:*)"]
 WEB = ["WebSearch", "WebFetch"]  # analysis (plan) sessions may research the web
 DENIED = ["Bash(git push:*)", "Bash(rm:*)", "Bash(curl:*)", "Bash(sudo:*)", "Bash(git reset:*)", "Bash(git checkout main:*)"]
 
@@ -70,6 +70,12 @@ def log(msg):
     LOG.parent.mkdir(exist_ok=True)
     with LOG.open("a") as f:
         f.write(f"{time.strftime('%F %T')} {msg}\n")
+    m = re.match(r"(start|end) t(\d+)", msg)
+    if m:  # same event into the shared registry (vault-log -> events.jsonl)
+        try:
+            subprocess.run([str(Path.home() / "vault/bin/vault-log"), "--agent", "dispatcher", "--kind", m.group(1), "--task", "t" + m.group(2), msg], check=False, timeout=10)
+        except Exception:
+            pass
 
 
 def call(method, path, body=None, tok=None):
@@ -204,7 +210,7 @@ def ask(prompt, perm, model, mode, cwd, agents=None, schema=None, resume=None):
         p = subprocess.run(["claude", "-p", prompt, "--model", model, "--permission-mode", perm, "--max-budget-usd", BUDGET[mode],
                             "--output-format", "json", *extra,
                             "--allowedTools", *ALLOWED, *(WEB if perm == "plan" else []), "--disallowedTools", *DENIED],
-                           cwd=cwd, env={**os.environ, "TASKVIEW_NOHOOK": "1", "TASKVIEW_TASK_ID": CURRENT_TASK}, capture_output=True, text=True, timeout=TIMEOUT[mode])
+                           cwd=cwd, env={**os.environ, "PATH": f"{Path.home()}/.local/bin:{HIMALAYA_DIR}:{os.environ.get('PATH', '')}", "TASKVIEW_NOHOOK": "1", "TASKVIEW_TASK_ID": CURRENT_TASK}, capture_output=True, text=True, timeout=TIMEOUT[mode])
     except subprocess.TimeoutExpired:
         return False, f"Timeout ({TIMEOUT[mode] // 60} min).", None, None
     except Exception as e:
@@ -228,12 +234,27 @@ def ask_opencode(prompt, cwd):
     """Run one `opencode run` session with the same guard rails as the claude executor; returns (ok, text)."""
     try:
         p = subprocess.run([OC_BIN, "run", "--model", OC_MODEL, "--dir", str(cwd), prompt], cwd=cwd, capture_output=True, text=True,
-                           timeout=OC_TIMEOUT, env={**os.environ, "TASKVIEW_NOHOOK": "1", "TASKVIEW_TASK_ID": CURRENT_TASK, "OPENCODE_PERMISSION": json.dumps(OC_PERMISSION)})
+                           timeout=OC_TIMEOUT, env={**os.environ, "PATH": f"{Path.home()}/.local/bin:{HIMALAYA_DIR}:{os.environ.get('PATH', '')}", "TASKVIEW_NOHOOK": "1", "TASKVIEW_TASK_ID": CURRENT_TASK, "OPENCODE_PERMISSION": json.dumps(OC_PERMISSION)})
         return p.returncode == 0, (p.stdout or p.stderr or "").strip()
     except subprocess.TimeoutExpired:
         return False, f"Timeout ({OC_TIMEOUT // 60} min)."
     except Exception as e:
         return False, f"Error: {e}"
+
+
+def notify_detail(done_tag, sections):
+    """One short line for the phone: the question, the failure cause, the plan's start or the review verdict."""
+    flat = lambda x: " ".join((x or "").split())
+    if done_tag == "ia·pregunta":
+        return "Pregunta: " + flat(question(sections[-1][2]))[:350] if sections and question(sections[-1][2]) else ""
+    if done_tag == "ia·fallo":
+        bad = [o for _, k, o in sections if not k]
+        return "Causa: " + flat(bad[-1])[-300:] if bad else ""
+    if done_tag == "ia·plan-listo":
+        plan = [o for h, k, o in sections if k and h.startswith("Plan")]
+        return "Plan: " + flat(plan[-1])[:300] if plan else ""
+    rev = [o for h, k, o in sections if k and h.startswith("Revisión")]
+    return flat(rev[-1])[:300] if rev else ""
 
 
 def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
@@ -247,7 +268,9 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
     toggle(api, tags, t, "ia·trabajando", True)
     toggle(api, tags, t, "ia·pregunta", False)
     api("PATCH", "/module/tasks", {"id": tid, "statusId": st["In Progress"]})
-    subprocess.run([sys.executable, str(HERE / "notify.py"), f"IA: {t['description'][:60]}", f"Empieza ({'plan' if mode == 'plan' else 'ejecución'}): pasa a En curso", "2"])
+    ttl = f"IA #{tid} · {goal['name']}: {t['description'][:50]}"
+    t_run, who = time.time(), (MODELS["plan"] if mode == "plan" else MODELS["exec"])  # `who` is replaced by the exec branch when OpenCode runs
+    subprocess.run([sys.executable, str(HERE / "notify.py"), ttl, f"Empieza ({'plan' if mode == 'plan' else 'ejecución'}, {runner}): pasa a En curso", "2"])
     note = t.get("note") or ""
     base = EXTRA_ROOTS.get(repo, CODE / repo)
     in_place = not (base / ".git").exists()  # no repo: no worktree, read-only analysis only
@@ -255,6 +278,8 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
     mbase0 = re.search(r"(?im)^WORKTREE_BASE:\s*(\S+)", note or "")
     review_base = (mbase0.group(1) if mbase0 else "main")
     ctx = board_context(api, goal, st, t)
+    ctx += ("\nCorreo: si la tarea pide enviar un correo, usa `send-mail --to you@example.com --subject \"...\" --text \"...\" [--html FILE] [--attach FILE]`. "
+            "Solo a ese destinatario; cualquier otro, pregunta antes con PREGUNTA:.\n")
     stamp = lambda: time.strftime("%F %H:%M")
     sections, ok, verdict_ok, asked, review_deferred = [], False, True, None, False  # asked = session id waiting for user
     try:
@@ -305,6 +330,11 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
                 if runner == "opencode":
                     ok, out = ask_opencode(exec_prompt, wt)
                     who = f"OpenCode · {OC_MODEL}"
+                    if ok:  # exit 0 with no file changes and no commits is a silent failure (model only announced what it would do)
+                        dirty = subprocess.run(["git", "-C", str(wt), "status", "--porcelain"], capture_output=True, text=True).stdout.strip()
+                        ahead = subprocess.run(["git", "-C", str(wt), "rev-list", "--count", f"{review_base}..HEAD"], capture_output=True, text=True).stdout.strip()
+                        if not dirty and ahead in ("", "0"):
+                            ok, out = False, f"{out}\n(OpenCode terminó sin cambios ni commits: se da por fallo. Reintenta con ia·ejecutar.)"
                 else:
                     if resume and attempt == 1:  # continue the session that asked, with the user's answer
                         exec_prompt = f"Respuesta del usuario a tu pregunta:\n{resume['answer']}\n\nContinúa con la tarea y termina con el resumen."
@@ -352,17 +382,19 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
     if review_deferred and ok and not asked:
         toggle(api, tags, t, "ia·trabajando", False)
         api("PATCH", "/module/tasks", {"id": tid, "note": f"{note}{body}".strip(), "statusId": st["Review"]})
-        log(f"end t{tid} ok={ok} review_deferred")
-        subprocess.run([sys.executable, str(HERE / "notify.py"), f"IA: {t['description'][:60]}", "Hecho; revisión Opus aplazada (límite 5h)", "3"])
+        log(f"end t{tid} ok={ok} review_deferred runner={runner} model={who.split(' · ')[-1].replace(' ', '_')} secs={int(time.time() - t_run)}")
+        subprocess.run([sys.executable, str(HERE / "notify.py"), ttl, f"Hecho en {branch}; revisión Opus aplazada por el límite de 5h. Reencola tras el reset.", "3"])
         return
     done_tag = "ia·fallo" if not ok else ("ia·pregunta" if asked else "ia·plan-listo" if mode == "plan" else ("ia·hecho" if verdict_ok else "ia·cambios"))
     toggle(api, tags, t, "ia·trabajando", False)
     toggle(api, tags, t, done_tag, True)
     api("PATCH", "/module/tasks", {"id": tid, "note": f"{note}{body}".strip(), "statusId": st["Review"]})
-    log(f"end t{tid} ok={ok} {done_tag}")
+    log(f"end t{tid} ok={ok} {done_tag} runner={runner} model={who.split(' · ')[-1].replace(' ', '_')} secs={int(time.time() - t_run)}")
     msg = {"ia·fallo": "Revisa la nota de la tarea", "ia·plan-listo": "Plan listo para revisar", "ia·hecho": "Implementada y aprobada por la revisión",
            "ia·cambios": "Implementada, la revisión pide cambios", "ia·pregunta": "La IA tiene una pregunta"}[done_tag]
-    subprocess.run([sys.executable, str(HERE / "notify.py"), f"IA: {t['description'][:60]}", msg, "4" if done_tag in ("ia·fallo", "ia·cambios") else "3"])
+    detail = notify_detail(done_tag, sections)
+    extra = f"\nRama {branch}" if mode == "exec" and not in_place else ""
+    subprocess.run([sys.executable, str(HERE / "notify.py"), ttl, f"{msg}.{(' ' + detail) if detail else ''}{extra}", "4" if done_tag in ("ia·fallo", "ia·cambios") else "3"])
     if tags.get(MAIL) in set(t.get("tags") or []):
         mail_result(api, tags, t, msg, body, done_tag)
 

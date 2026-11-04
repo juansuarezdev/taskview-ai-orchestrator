@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Weekly review, sent by email and ntfy on Sunday evening (launchd com.example.taskview-weekly).
+"""Weekly review, sent by email and as a notification on Sunday evening (launchd com.example.taskview-weekly).
 
 Read-only: queries Postgres through `docker exec` and parses selfhost/logs/ai-dispatch.log.
 - Closed this week per project, split own (para-mí) vs. the rest.
@@ -8,7 +8,7 @@ Read-only: queries Postgres through `docker exec` and parses selfhost/logs/ai-di
 - Next week: due dates and the user's open priorities.
 - Health: newest backup.
 """
-import os, re, subprocess, sys, time
+import json, os, re, subprocess, sys, time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -66,15 +66,36 @@ def ai_runs():
     if not log.exists():
         return None
     since = datetime.now() - timedelta(days=7)
-    ends = []
+    ends, by_model = [], {}
     for line in log.read_text(errors="replace").splitlines():
-        m = re.match(r"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) end t\d+ ok=(\w+) (\S+)", line)
+        m = re.match(r"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) end t\d+ ok=(\w+) (\S+)(?: runner=(\S+) model=(\S+) secs=(\d+))?", line)
         if m and datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S") >= since:
             ends.append((m.group(2) == "True", m.group(3)))
+            if m.group(5):
+                by_model.setdefault(m.group(5), []).append((m.group(3), int(m.group(6))))
     total = len(ends)
     asked = sum(1 for _, tag in ends if tag.endswith("pregunta"))
     failed = sum(1 for ok, tag in ends if not ok or tag.endswith("fallo"))
-    return total, asked, failed
+    return total, asked, failed, by_model
+
+
+def local_usage():
+    """local-model calls in the last 7 days from its usage.jsonl."""
+    f = Path.home() / "Projects/code/local-model/usage.jsonl"
+    if not f.exists():
+        return ""
+    since, rows = time.time() - 7 * 86400, []
+    for line in f.read_text(errors="replace").splitlines():
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        if r.get("ts", 0) >= since:
+            rows.append(r)
+    if not rows:
+        return ""
+    bad = sum(1 for r in rows if not r.get("ok"))
+    return f"local-model: {len(rows)} llamadas, {bad} con error, {sum(r['secs'] for r in rows) / len(rows):.0f} s de media ({rows[-1]['model']})"
 
 
 def next_week():
@@ -112,8 +133,14 @@ def build():
     parts.append(block("Atascadas más de 7 días (Review o pregunta de la IA)", s))
     runs = ai_runs()
     if runs and runs[0]:
-        total, asked, failed = runs
+        total, asked, failed, by_model = runs
         parts.append(f"IA esta semana\n- {total} ejecuciones, {asked} con pregunta ({asked / total:.0%}; antes {BASELINE_ASK_RATE:.0%}), {failed} con fallo")
+        for m, rs in sorted(by_model.items()):
+            good = sum(1 for tag, _ in rs if tag.endswith(("hecho", "plan-listo")))
+            parts[-1] += f"\n- {m}: {len(rs)} ejecuciones, {good} hechas/plan listo, {sum(1 for tag, _ in rs if tag.endswith('fallo'))} fallo, {sum(sec for _, sec in rs) // 60} min"
+        loc = local_usage()
+        if loc:
+            parts[-1] += "\n- " + loc
     due, top = next_week()
     parts += [block("Vence en 7 días", due), block("Tus prioridades abiertas", top, 5), backup_line()]
     body = "\n\n".join(p for p in parts if p)
