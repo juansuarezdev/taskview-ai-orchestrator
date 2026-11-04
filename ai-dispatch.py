@@ -24,7 +24,7 @@ CODE = Path.home() / "Projects/code"
 EXTRA_ROOTS = {"repo-r": Path.home() / "Projects/repo-r"}  # boards whose folder lives outside ~/Projects/code (not a git repo: plan only)
 WORKTREES = CODE / ".ai-worktrees"
 LOG = HERE / "logs/ai-dispatch.log"
-REPOS = {"Board M": "repo-m", "Board G": "repo-g", "Board E": "repo-e", "TaskView": "taskview-community", "Board R": "repo-r"}
+REPOS = {"Board M": "repo-m", "Board G": "repo-g", "Board E": "repo-e", "TaskView": "taskview-community", "Board R": "repo-r", "Board GC": "repo-gc", "Board SB": "repo-sb"}
 TRIGGERS = {"ia·plan": ("plan", "claude"), "ia·ejecutar": ("exec", "claude"), "ia·opencode": ("exec", "opencode")}
 # packs (ia-packs.json): one tag = a trigger + optional mail, so tasks need a single tag; they win over loose triggers
 PACKS = json.loads((HERE / "ia-packs.json").read_text()) if (HERE / "ia-packs.json").exists() else {}
@@ -193,6 +193,9 @@ def fmt_review(so):
     return "\n".join(lines)
 
 
+CURRENT_TASK = ""  # id of the task being run; child sessions get it as TASKVIEW_TASK_ID
+
+
 def ask(prompt, perm, model, mode, cwd, agents=None, schema=None, resume=None):
     """Run one claude -p session; returns (ok, text, session_id, structured_output)."""
     extra = [*(["--agents", json.dumps(agents)] if agents else []), *(["--json-schema", json.dumps(schema)] if schema else []),
@@ -201,7 +204,7 @@ def ask(prompt, perm, model, mode, cwd, agents=None, schema=None, resume=None):
         p = subprocess.run(["claude", "-p", prompt, "--model", model, "--permission-mode", perm, "--max-budget-usd", BUDGET[mode],
                             "--output-format", "json", *extra,
                             "--allowedTools", *ALLOWED, *(WEB if perm == "plan" else []), "--disallowedTools", *DENIED],
-                           cwd=cwd, env={**os.environ, "TASKVIEW_NOHOOK": "1"}, capture_output=True, text=True, timeout=TIMEOUT[mode])
+                           cwd=cwd, env={**os.environ, "TASKVIEW_NOHOOK": "1", "TASKVIEW_TASK_ID": CURRENT_TASK}, capture_output=True, text=True, timeout=TIMEOUT[mode])
     except subprocess.TimeoutExpired:
         return False, f"Timeout ({TIMEOUT[mode] // 60} min).", None, None
     except Exception as e:
@@ -225,7 +228,7 @@ def ask_opencode(prompt, cwd):
     """Run one `opencode run` session with the same guard rails as the claude executor; returns (ok, text)."""
     try:
         p = subprocess.run([OC_BIN, "run", "--model", OC_MODEL, "--dir", str(cwd), prompt], cwd=cwd, capture_output=True, text=True,
-                           timeout=OC_TIMEOUT, env={**os.environ, "TASKVIEW_NOHOOK": "1", "OPENCODE_PERMISSION": json.dumps(OC_PERMISSION)})
+                           timeout=OC_TIMEOUT, env={**os.environ, "TASKVIEW_NOHOOK": "1", "TASKVIEW_TASK_ID": CURRENT_TASK, "OPENCODE_PERMISSION": json.dumps(OC_PERMISSION)})
         return p.returncode == 0, (p.stdout or p.stderr or "").strip()
     except subprocess.TimeoutExpired:
         return False, f"Timeout ({OC_TIMEOUT // 60} min)."
@@ -235,6 +238,8 @@ def ask_opencode(prompt, cwd):
 
 def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
     tid = t["id"]
+    global CURRENT_TASK
+    CURRENT_TASK = str(tid)
     log(f"start t{tid} {mode} [{goal['name']}] {t['description']}")
     toggle(api, tags, t, trig, False)
     if PACKS.get(trig, {}).get("mail"):
@@ -247,9 +252,11 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
     base = EXTRA_ROOTS.get(repo, CODE / repo)
     in_place = not (base / ".git").exists()  # no repo: no worktree, read-only analysis only
     branch, wt = f"ai/t{tid}", WORKTREES / f"{repo}-t{tid}"
+    mbase0 = re.search(r"(?im)^WORKTREE_BASE:\s*(\S+)", note or "")
+    review_base = (mbase0.group(1) if mbase0 else "main")
     ctx = board_context(api, goal, st, t)
     stamp = lambda: time.strftime("%F %H:%M")
-    sections, ok, verdict_ok, asked = [], False, True, None  # asked = session id of a question waiting for the user
+    sections, ok, verdict_ok, asked, review_deferred = [], False, True, None, False  # asked = session id waiting for user
     try:
         if in_place:
             if mode != "plan":
@@ -257,7 +264,16 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
             wt = base
         elif not wt.exists():
             WORKTREES.mkdir(exist_ok=True)
-            start = "main" if subprocess.run(["git", "-C", str(base), "rev-parse", "--verify", "main"], capture_output=True).returncode == 0 else "HEAD"
+            # Optional pin in the task note: "WORKTREE_BASE: <branch>" (e.g. ai/t271). Else main/HEAD.
+            mbase = re.search(r"(?im)^WORKTREE_BASE:\s*(\S+)", note or "")
+            if mbase:
+                start = mbase.group(1)
+                chk = subprocess.run(["git", "-C", str(base), "rev-parse", "--verify", start], capture_output=True)
+                if chk.returncode != 0:
+                    raise RuntimeError(f"WORKTREE_BASE {start} no existe en {base}")
+            else:
+                start = "main" if subprocess.run(["git", "-C", str(base), "rev-parse", "--verify", "main"], capture_output=True).returncode == 0 else "HEAD"
+            review_base = start
             subprocess.run(["git", "-C", str(base), "worktree", "add", "-b", branch, str(wt), start], check=True, capture_output=True)
         if not resume and len(re.sub(r"<[^>]+>", " ", note).strip()) < CONTEXT_MIN:  # thin task: a cheap model gathers context first, fewer questions later
             cok, cout, _, _ = ask(f"{ctx}\nTarea de TaskView #{tid}: {t['description']}\n\nLa tarea tiene poca descripción. Explora el repo (solo lectura) y escribe, en español y en "
@@ -307,7 +323,7 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
                     sections.append(("Commit del dispatcher", c.returncode == 0, c.stdout + c.stderr or t["description"][:72]))
                 if not ok:
                     break
-                rok, rout, _, so = ask(f"{ctx}\n{task_txt}\nOtra IA implementó esta tarea en la rama {branch} (worktree actual). Revisa con `git diff main...HEAD` y `git log main..HEAD`: "
+                rok, rout, _, so = ask(f"{ctx}\n{task_txt}\nOtra IA implementó esta tarea en la rama {branch} (worktree actual). Revisa con `git diff {review_base}...HEAD` y `git log {review_base}..HEAD` (base de la tarea, no necesariamente main): "
                                 "¿cumple lo pedido?, ¿bugs, casos límite, seguridad o cambios fuera de alcance?, ¿faltan tests? NO modifiques nada. "
                                 "Responde con el veredicto y los hallazgos concretos (archivo y línea) en el esquema pedido.",
                                       "plan", MODELS["review"], "review", wt, agents=PLAN_AGENTS, schema=REVIEW_SCHEMA)
@@ -315,6 +331,11 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
                     verdict_ok, rout = rok and so["veredicto"] == "APROBADO", fmt_review(so)
                 else:  # no structured output: fall back to the text
                     verdict_ok = rok and "VEREDICTO: APROBADO" in rout
+                if (not rok) and re.search(r"5-hour limit|hit your limit", rout or "", re.I):
+                    sections.append((f"Revisión · {MODELS['review']}{tag}", False,
+                                     (rout or "") + "\n(Revisión aplazada por límite Claude; worktree conservado. Reencolar tras el reset.)"))
+                    review_deferred = True
+                    break
                 sections.append((f"Revisión · {MODELS['review']}{tag}", rok, rout))
                 if verdict_ok or not rok:
                     break
@@ -328,6 +349,12 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
     if asked:
         body += (f"\n\nSesión IA: {asked} mode={mode} runner={runner}\n"
                  "Para responder: escribe «RESPUESTA» seguido de dos puntos y tu texto debajo de esta línea, y pon la etiqueta ia·continuar.")
+    if review_deferred and ok and not asked:
+        toggle(api, tags, t, "ia·trabajando", False)
+        api("PATCH", "/module/tasks", {"id": tid, "note": f"{note}{body}".strip(), "statusId": st["Review"]})
+        log(f"end t{tid} ok={ok} review_deferred")
+        subprocess.run([sys.executable, str(HERE / "notify.py"), f"IA: {t['description'][:60]}", "Hecho; revisión Opus aplazada (límite 5h)", "3"])
+        return
     done_tag = "ia·fallo" if not ok else ("ia·pregunta" if asked else "ia·plan-listo" if mode == "plan" else ("ia·hecho" if verdict_ok else "ia·cambios"))
     toggle(api, tags, t, "ia·trabajando", False)
     toggle(api, tags, t, done_tag, True)
