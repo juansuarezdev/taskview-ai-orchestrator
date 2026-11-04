@@ -7,3 +7,5 @@ __pycache__/
 .opencode-model
 .api-token
 vapid/
+*.bak-*
+grokbot/
