@@ -21,10 +21,13 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 API = "http://127.0.0.1:1725"
 CODE = Path.home() / "Projects/code"
-EXTRA_ROOTS = {"repo-r": Path.home() / "Projects/repo-r"}  # boards whose folder lives outside ~/Projects/code (not a git repo: plan only)
+EXTRA_ROOTS = {"repo-r": Path.home() / "Projects/repo-r",  # boards whose folder is not ~/Projects/code/<repo>; no git repo there = plan only
+               "inbox": CODE,  # loose tasks: read-only analysis across every repo
+               "repo-h": Path.home() / "vault/projects/project"}
 WORKTREES = CODE / ".ai-worktrees"
 LOG = HERE / "logs/ai-dispatch.log"
-REPOS = {"Board M": "repo-m", "Board G": "repo-g", "Board E": "repo-e", "TaskView": "taskview-community", "Board R": "repo-r", "Board GC": "repo-gc", "Board SB": "repo-sb", "local-model": "local-model"}
+REPOS = {"Board M": "repo-m", "Board G": "repo-g", "Board E": "repo-e", "TaskView": "taskview-community", "Board R": "repo-r", "Board GC": "repo-gc", "Board SB": "repo-sb", "local-model": "local-model",
+         "Board A": "repo-a", "Board H": "repo-h", "Inbox": "inbox"}
 TRIGGERS = {"ia·plan": ("plan", "claude"), "ia·ejecutar": ("exec", "claude"), "ia·opencode": ("exec", "opencode")}
 # packs (ia-packs.json): one tag = a trigger + optional mail, so tasks need a single tag; they win over loose triggers
 PACKS = json.loads((HERE / "ia-packs.json").read_text()) if (HERE / "ia-packs.json").exists() else {}
@@ -35,6 +38,7 @@ HIMALAYA_DIR = "/opt/homebrew/bin"  # launchd PATH does not include it
 CONTINUE = "ia·continuar"  # set by the user on a Review task after writing RESPUESTA: in the note
 PROGRESS = {"ia·trabajando": "#f59e0b", "ia·plan-listo": "#3b82f6", "ia·hecho": "#22c55e", "ia·cambios": "#eab308", "ia·fallo": "#ef4444",
             "ia·pregunta": "#a855f7"}
+USER_TAGS = {"para-mí": "#8b5cf6", "flujo-ia": "#14b8a6"}  # created on every served board too: para-mí = never touched, flujo-ia = Bandeja IA list
 TRIGGER_COLORS = {"ia·plan": "#3b82f6", "ia·ejecutar": "#f97316", "ia·opencode": "#10b981", CONTINUE: "#a855f7", MAIL: "#0ea5e9",
                   **{n: p["color"] for n, p in PACKS.items()}}
 MODELS = {"plan": "claude-opus-5-5", "exec": "claude-sonnet-5-5", "review": "claude-opus-5-5",
@@ -104,12 +108,12 @@ def main():
 
     for g in api("GET", "/module/goals"):
         repo = REPOS.get(g["name"])
-        if not repo:
+        if not repo or g.get("archive"):
             continue
         gid = g["id"]
         # the endpoint ignores ?goalId and returns every goal's tags, and toggling needs the tag of the task's own goal
         tags = {t["name"]: t["id"] for t in api("GET", f"/module/tags?goalId={gid}") if t["goalId"] == gid}
-        for name, color in {**TRIGGER_COLORS, **PROGRESS}.items():  # make the tags exist so they can be picked in the UI
+        for name, color in {**TRIGGER_COLORS, **PROGRESS, **USER_TAGS}.items():  # make the tags exist so they can be picked in the UI
             if name not in tags and not dry:
                 tags[name] = api("POST", "/module/tags", {"name": name, "color": color, "goalId": gid})["id"]
         if not any(n in tags for n in (*TRIGGERS, CONTINUE)):
@@ -124,7 +128,7 @@ def main():
                 r = api("GET", f"/module/kanban/tasks/{gid}/{col}/{cur}")
                 for t in r["tasks"]:
                     have = set(t.get("tags") or [])
-                    if tags.get("para-mí") in have:
+                    if tags.get("para-mí") in have or t.get("complete"):  # done tasks may keep a stale trigger tag
                         continue
                     if sname == "Review":  # only answered questions are picked up from Review
                         if tags.get(CONTINUE) not in have:
