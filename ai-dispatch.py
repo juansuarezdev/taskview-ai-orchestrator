@@ -5,6 +5,7 @@ Tag a task (not `para-mí`, status Backlog/TODO) in a project board with:
   ia·plan      -> claude plans only (read-only), writes the plan into the task note, moves it to Review
   ia·opencode  -> same as ia·ejecutar but OpenCode implements (free model opencode/deepseek-v4.1-flash-free); Opus still reviews
   ia·ejecutar  -> claude implements it in its own git worktree/branch `ai/t<id>`, never pushes, moves it to Review
+If Claude hits the 5-hour session limit during exec (or a cooldown file says so), the same task continues with OpenCode automatically; Opus review is still deferred on limit.
 Models: plan = Opus, exec = Sonnet, then an automatic review by Opus (ia·hecho if approved, ia·cambios if not).
 Plan/exec sessions delegate to subagents by model: `explorer` (Haiku, read-only search) and `tester` (Sonnet, runs tests).
 The review answers with a JSON schema (verdict + findings) instead of free text.
@@ -233,6 +234,60 @@ OC_TIMEOUT = 40 * 60
 OC_PERMISSION = {"bash": {"*": "allow", "git push*": "deny", "git reset*": "deny", "rm *": "deny", "sudo*": "deny", "curl*": "deny", "wget*": "deny"},
                  "edit": "allow"}
 
+LIMIT_RE = re.compile(r"5-hour limit|hit your limit|usage limit|rate limit|limit reached", re.I)
+CLAUDE_LIMIT_FILE = HERE / "logs/.claude-limit-until"  # unix ts; while now < ts, ia·ejecutar routes to OpenCode
+
+
+def is_claude_limit(text):
+    return bool(LIMIT_RE.search(text or ""))
+
+
+def claude_is_limited():
+    try:
+        until = float(CLAUDE_LIMIT_FILE.read_text().strip())
+    except Exception:
+        return False
+    if time.time() >= until:
+        try:
+            CLAUDE_LIMIT_FILE.unlink()
+        except Exception:
+            pass
+        return False
+    return True
+
+
+def mark_claude_limited(text=None, hours=5):
+    """Record cooldown until Claude's 5h window resets (default +5h from now)."""
+    until = time.time() + hours * 3600
+    # best-effort parse of "resets … HH:MM" in local time-local wall clock
+    m = re.search(r"resets?\s+(?:at\s+)?(\d{1,2}):(\d{2})\s*(am|pm)?", text or "", re.I)
+    if m:
+        h, mi = int(m.group(1)), int(m.group(2))
+        ap = (m.group(3) or "").lower()
+        if ap == "pm" and h < 12:
+            h += 12
+        if ap == "am" and h == 12:
+            h = 0
+        now = time.localtime()
+        cand = time.mktime((now.tm_year, now.tm_mon, now.tm_mday, h, mi, 0, 0, 0, -1))
+        if cand <= time.time():
+            cand += 24 * 3600
+        until = cand
+    CLAUDE_LIMIT_FILE.parent.mkdir(exist_ok=True)
+    CLAUDE_LIMIT_FILE.write_text(str(until))
+    log(f"claude limit until {time.strftime('%F %T', time.localtime(until))}")
+
+
+def opencode_ok_check(ok, out, wt, review_base):
+    """Exit 0 with no file changes and no commits is a silent failure for OpenCode."""
+    if not ok:
+        return ok, out
+    dirty = subprocess.run(["git", "-C", str(wt), "status", "--porcelain"], capture_output=True, text=True).stdout.strip()
+    ahead = subprocess.run(["git", "-C", str(wt), "rev-list", "--count", f"{review_base}..HEAD"], capture_output=True, text=True).stdout.strip()
+    if not dirty and ahead in ("", "0"):
+        return False, f"{out}\n(OpenCode terminó sin cambios ni commits: se da por fallo. Reintenta con ia·ejecutar.)"
+    return ok, out
+
 
 def ask_opencode(prompt, cwd):
     """Run one `opencode run` session with the same guard rails as the claude executor; returns (ok, text)."""
@@ -265,6 +320,9 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
     tid = t["id"]
     global CURRENT_TASK
     CURRENT_TASK = str(tid)
+    if mode == "exec" and runner == "claude" and claude_is_limited():
+        log(f"t{tid} claude en cooldown → runner=opencode")
+        runner = "opencode"
     log(f"start t{tid} {mode} [{goal['name']}] {t['description']}")
     toggle(api, tags, t, trig, False)
     if PACKS.get(trig, {}).get("mail"):
@@ -334,17 +392,23 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
                 if runner == "opencode":
                     ok, out = ask_opencode(exec_prompt, wt)
                     who = f"OpenCode · {OC_MODEL}"
-                    if ok:  # exit 0 with no file changes and no commits is a silent failure (model only announced what it would do)
-                        dirty = subprocess.run(["git", "-C", str(wt), "status", "--porcelain"], capture_output=True, text=True).stdout.strip()
-                        ahead = subprocess.run(["git", "-C", str(wt), "rev-list", "--count", f"{review_base}..HEAD"], capture_output=True, text=True).stdout.strip()
-                        if not dirty and ahead in ("", "0"):
-                            ok, out = False, f"{out}\n(OpenCode terminó sin cambios ni commits: se da por fallo. Reintenta con ia·ejecutar.)"
+                    ok, out = opencode_ok_check(ok, out, wt, review_base)
                 else:
                     if resume and attempt == 1:  # continue the session that asked, with the user's answer
                         exec_prompt = f"Respuesta del usuario a tu pregunta:\n{resume['answer']}\n\nContinúa con la tarea y termina con el resumen."
                     ok, out, sid, _ = ask(exec_prompt, "acceptEdits", MODELS["exec"], "exec", wt, agents=EXEC_AGENTS,
                                           resume=resume["sid"] if resume and attempt == 1 else None)
                     who = MODELS["exec"]
+                    if (not ok) and is_claude_limit(out):
+                        mark_claude_limited(out)
+                        sections.append((f"Resultado de la IA · {who}{tag}", False,
+                                         (out or "") + "\n(Límite Claude 5h: paso automático a OpenCode.)"))
+                        log(f"t{tid} claude limit mid-exec → opencode")
+                        ok, out = ask_opencode(exec_prompt, wt)
+                        who = f"OpenCode · {OC_MODEL} (fallback límite Claude)"
+                        runner = "opencode"
+                        sid = None
+                        ok, out = opencode_ok_check(ok, out, wt, review_base)
                 sections.append((f"Resultado de la IA · {who}{tag}", ok, out))
                 if ok and runner == "claude" and question(out):
                     asked = sid  # leave the worktree as is; the resumed session keeps working on it
@@ -365,7 +429,8 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
                     verdict_ok, rout = rok and so["veredicto"] == "APROBADO", fmt_review(so)
                 else:  # no structured output: fall back to the text
                     verdict_ok = rok and "VEREDICTO: APROBADO" in rout
-                if (not rok) and re.search(r"5-hour limit|hit your limit", rout or "", re.I):
+                if (not rok) and is_claude_limit(rout):
+                    mark_claude_limited(rout)
                     sections.append((f"Revisión · {MODELS['review']}{tag}", False,
                                      (rout or "") + "\n(Revisión aplazada por límite Claude; worktree conservado. Reencolar tras el reset.)"))
                     review_deferred = True
