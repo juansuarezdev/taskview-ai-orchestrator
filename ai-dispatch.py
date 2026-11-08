@@ -84,7 +84,7 @@ def log(msg):
 
 
 def call(method, path, body=None, tok=None):
-    h = {"content-type": "application/json"}
+    h = {"content-type": "application/json", "x-taskview-client": "ai-dispatch"}  # history/Recientes record these changes as the AI's
     if tok:
         h["authorization"] = "Bearer " + tok
     req = urllib.request.Request(API + path, method=method, headers=h, data=json.dumps(body).encode() if body is not None else None)
@@ -140,7 +140,7 @@ def main():
                         elif err:
                             toggle(api, tags, t, CONTINUE, False)
                             log(f"continue t{t['id']} skipped: {err}")
-                            subprocess.run([sys.executable, str(HERE / "notify.py"), f"IA: {t['description'][:60]}", f"No puedo continuar: {err}", "3"])
+                            subprocess.run([sys.executable, str(HERE / "notify.py"), f"IA: {t['description'][:60]}", f"No puedo continuar: {err}", "3", "--task", str(t["id"])])
                         else:
                             run(api, g, repo, st, tags, t, res["mode"], CONTINUE, res["runner"], res)
                             return
@@ -332,7 +332,7 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
     api("PATCH", "/module/tasks", {"id": tid, "statusId": st["In Progress"]})
     ttl = f"IA #{tid} · {goal['name']}: {t['description'][:50]}"
     t_run, who = time.time(), (MODELS["plan"] if mode == "plan" else MODELS["exec"])  # `who` is replaced by the exec branch when OpenCode runs
-    subprocess.run([sys.executable, str(HERE / "notify.py"), ttl, f"Empieza ({'plan' if mode == 'plan' else 'ejecución'}, {runner}): pasa a En curso", "2"])
+    subprocess.run([sys.executable, str(HERE / "notify.py"), ttl, f"Empieza ({'plan' if mode == 'plan' else 'ejecución'}, {runner}): pasa a En curso", "2", "--task", str(tid)])
     note = t.get("note") or ""
     base = EXTRA_ROOTS.get(repo, CODE / repo)
     in_place = not (base / ".git").exists()  # no repo: no worktree, read-only analysis only
@@ -452,7 +452,7 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
         toggle(api, tags, t, "ia·trabajando", False)
         api("PATCH", "/module/tasks", {"id": tid, "note": f"{note}{body}".strip(), "statusId": st["Review"]})
         log(f"end t{tid} ok={ok} review_deferred runner={runner} model={who.split(' · ')[-1].replace(' ', '_')} secs={int(time.time() - t_run)}")
-        subprocess.run([sys.executable, str(HERE / "notify.py"), ttl, f"Hecho en {branch}; revisión Opus aplazada por el límite de 5h. Reencola tras el reset.", "3"])
+        subprocess.run([sys.executable, str(HERE / "notify.py"), ttl, f"Hecho en {branch}; revisión Opus aplazada por el límite de 5h. Reencola tras el reset.", "3", "--task", str(tid)])
         return
     done_tag = "ia·fallo" if not ok else ("ia·pregunta" if asked else "ia·plan-listo" if mode == "plan" else ("ia·hecho" if verdict_ok else "ia·cambios"))
     toggle(api, tags, t, "ia·trabajando", False)
@@ -463,7 +463,7 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
            "ia·cambios": "Implementada, la revisión pide cambios", "ia·pregunta": "La IA tiene una pregunta"}[done_tag]
     detail = notify_detail(done_tag, sections)
     extra = f"\nRama {branch}" if mode == "exec" and not in_place else ""
-    subprocess.run([sys.executable, str(HERE / "notify.py"), ttl, f"{msg}.{(' ' + detail) if detail else ''}{extra}", "4" if done_tag in ("ia·fallo", "ia·cambios") else "3"])
+    subprocess.run([sys.executable, str(HERE / "notify.py"), ttl, f"{msg}.{(' ' + detail) if detail else ''}{extra}", "4" if done_tag in ("ia·fallo", "ia·cambios") else "3", "--task", str(tid)])
     if tags.get(MAIL) in set(t.get("tags") or []):
         mail_result(api, tags, t, msg, body, done_tag)
 
