@@ -1,6 +1,6 @@
 {
   "ia·pack·analizar":    {"trigger": "ia·plan",      "mail": true,  "color": "#2563eb"},
   "ia·pack·implementar": {"trigger": "ia·ejecutar",  "mail": true,  "color": "#ea580c"},
-  "ia·pack·barato":      {"trigger": "ia·opencode",  "mail": true,  "color": "#059669"},
+  "ia·pack·barato":      {"trigger": "ia·ejecutar",  "mail": true,  "color": "#059669"},
   "ia·pack·silencioso":  {"trigger": "ia·plan",      "mail": false, "color": "#64748b"}
 }

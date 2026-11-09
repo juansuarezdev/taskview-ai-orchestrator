@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Morning digest + due-date reminders, sent to the phone as a notification (notify.py).
 
-- Tasks tagged `para-mí` (not done) due today or overdue.
+- Tasks assigned to the user (not done) due today or overdue.
 - What is waiting in Review and what the AI dispatcher did since yesterday.
 Also emails a fuller version (full lists, titles of AI results and questions) with send-mail.
 Also prunes finished ai/ worktrees and branches (ai-clean.py --remove).
@@ -9,6 +9,8 @@ Run daily from launchd (com.example.taskview-daily).
 """
 import json, os, subprocess, sys, time, urllib.request
 from pathlib import Path
+
+import ia_users
 
 HERE = Path(__file__).resolve().parent
 API = "http://127.0.0.1:1725"
@@ -35,6 +37,7 @@ def main():
     c = dict(l.strip().split("=", 1) for l in (HERE / ".credentials").read_text().splitlines() if "=" in l)
     tok = token(c)
     api = lambda m, p, b=None: call(m, p, b, tok)["response"]
+    owner = ia_users.owner_email(c)
     today = time.strftime("%Y-%m-%d")
     alltags = api("GET", "/module/tags")
     due, review, ai, top, asks = [], [], 0, [], 0
@@ -42,7 +45,7 @@ def main():
     for g in api("GET", "/module/goals"):
         if g.get("archive"):
             continue
-        mine = next((t["id"] for t in alltags if t["goalId"] == g["id"] and t["name"] == "para-mí"), None)
+        collab = ia_users.collaborators(api, g["id"])
         aitags = {t["id"] for t in alltags if t["goalId"] == g["id"] and t["name"] in ("ia·plan-listo", "ia·hecho", "ia·fallo")}
         askt = next((t["id"] for t in alltags if t["goalId"] == g["id"] and t["name"] == "ia·pregunta"), None)
         for s in api("POST", "/module/kanban/fetch-statuses", {"goalId": g["id"]}):
@@ -56,9 +59,10 @@ def main():
                         end = ""
                 except ValueError:
                     end = ""
-                if mine in (t.get("tags") or []) and end and end <= today:
+                mine = owner in ia_users.assignee_emails(t, collab)
+                if mine and end and end <= today:
                     due.append(f"{t['description']} ({g['name']}{', vencida' if end < today else ''})")
-                if mine in (t.get("tags") or []) and s["name"] in ("TODO", "In Progress"):
+                if mine and s["name"] in ("TODO", "In Progress"):
                     top.append((end or "9999", -(t.get("priorityId") or 1), t["description"], g["name"]))
                 if askt in (t.get("tags") or []):
                     asks += 1

@@ -1,0 +1,8 @@
+{
+  "_comment": "Who a task belongs to is its assignee. owner = the user (empty: the `email` line of .credentials). runners = AI users: assigning one makes it run the task (ia·plan / ia·ejecutar / a pack decides what). Emails, no ids: ids are per project and resolved at run time. Keep in sync with api/src/tv-modules/start/aiUsers.ts and web/src/composables/useAiAssign.ts.",
+  "owner": "",
+  "runners": {
+    "claude": "claude@taskview.local",
+    "opencode": "opencode@taskview.local"
+  }
+}

@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Run TaskView tasks tagged for an AI agent.
 
-Tag a task (not `para-mí`, status Backlog/TODO) in a project board with:
-  ia·plan      -> claude plans only (read-only), writes the plan into the task note, moves it to Review
-  ia·opencode  -> same as ia·ejecutar but OpenCode implements (free model opencode/deepseek-v4.1-flash-free); Opus still reviews
-  ia·ejecutar  -> claude implements it in its own git worktree/branch `ai/t<id>`, never pushes, moves it to Review
+A task (status Backlog/TODO) runs when it is assigned to an AI user AND carries a mode tag.
+The assignee decides WHO (ia-users.json): Claude -> claude, OpenCode -> OpenCode (free model, Opus still reviews); both -> Claude.
+The tag decides WHAT:
+  ia·plan      -> plans only (read-only), writes the plan into the task note, moves it to Review
+  ia·ejecutar  -> implements it in its own git worktree/branch `ai/t<id>`, never pushes, moves it to Review
+A mode tag with no AI assignee does nothing. Tasks assigned to the user (owner in ia-users.json) are never touched.
 If Claude hits the 5-hour session limit during exec (or a cooldown file says so), the same task continues with OpenCode automatically; Opus review is still deferred on limit.
 Models: plan = Opus, exec = Sonnet, then an automatic review by Opus (ia·hecho if approved, ia·cambios if not).
 Plan/exec sessions delegate to subagents by model: `explorer` (Haiku, read-only search) and `tester` (Sonnet, runs tests).
@@ -12,12 +14,15 @@ The review answers with a JSON schema (verdict + findings) instead of free text.
 Questions: a claude session that lacks information ends with `PREGUNTA: ...`; the task goes to Review with ia·pregunta and the
 session id in the note. Answer by writing `RESPUESTA: ...` below the `Sesión IA:` line and tag it ia·continuar: the session is resumed.
 Progress tags: ia·trabajando while running, then ia·plan-listo / ia·hecho / ia·cambios / ia·fallo / ia·pregunta.
-Packs (ia-packs.json): ia·pack·analizar / implementar / barato / silencioso = trigger + email in one tag.
+Packs (ia-packs.json): ia·pack·analizar / implementar / barato / silencioso = mode + email in one tag
+(barato is plain ia·ejecutar + mail: the cheap runner comes from assigning OpenCode).
 Tag ia·correo on a task: when its run ends the result is emailed (send-mail) and the tag is removed.
 One task at a time (flock). Run every minute from launchd. `--dry-run` only lists.
 """
 import fcntl, html, json, os, re, subprocess, sys, time, urllib.request
 from pathlib import Path
+
+import ia_users
 
 HERE = Path(__file__).resolve().parent
 API = "http://127.0.0.1:1725"
@@ -29,8 +34,8 @@ WORKTREES = CODE / ".ai-worktrees"
 LOG = HERE / "logs/ai-dispatch.log"
 REPOS = {"Board M": "repo-m", "Board G": "repo-g", "Board E": "repo-e", "TaskView": "taskview-community", "Board R": "repo-r", "Board GC": "repo-gc", "Board SB": "repo-sb", "local-model": "local-model",
          "Board A": "repo-a", "Board H": "repo-h", "Inbox": "inbox"}
-TRIGGERS = {"ia·plan": ("plan", "claude"), "ia·ejecutar": ("exec", "claude"), "ia·opencode": ("exec", "opencode")}
-# packs (ia-packs.json): one tag = a trigger + optional mail, so tasks need a single tag; they win over loose triggers
+TRIGGERS = {"ia·plan": "plan", "ia·ejecutar": "exec"}  # mode tag -> mode; the runner comes from the assignee
+# packs (ia-packs.json): one tag = a mode tag + optional mail, so tasks need a single tag; they win over loose triggers
 PACKS = json.loads((HERE / "ia-packs.json").read_text()) if (HERE / "ia-packs.json").exists() else {}
 TRIGGERS = {**{n: TRIGGERS[p["trigger"]] for n, p in PACKS.items()}, **TRIGGERS}
 MAIL = "ia·correo"  # per-task: email the result to MAIL_TO when the run ends, then the tag is removed
@@ -39,8 +44,8 @@ HIMALAYA_DIR = "/opt/homebrew/bin"  # launchd PATH does not include it
 CONTINUE = "ia·continuar"  # set by the user on a Review task after writing RESPUESTA: in the note
 PROGRESS = {"ia·trabajando": "#f59e0b", "ia·plan-listo": "#3b82f6", "ia·hecho": "#22c55e", "ia·cambios": "#eab308", "ia·fallo": "#ef4444",
             "ia·pregunta": "#a855f7"}
-USER_TAGS = {"para-mí": "#8b5cf6", "flujo-ia": "#14b8a6"}  # created on every served board too: para-mí = never touched, flujo-ia = Bandeja IA list
-TRIGGER_COLORS = {"ia·plan": "#3b82f6", "ia·ejecutar": "#f97316", "ia·opencode": "#10b981", CONTINUE: "#a855f7", MAIL: "#0ea5e9",
+USER_TAGS = {"flujo-ia": "#14b8a6"}  # created on every served board too: flujo-ia = Bandeja IA list
+TRIGGER_COLORS = {"ia·plan": "#3b82f6", "ia·ejecutar": "#f97316", CONTINUE: "#a855f7", MAIL: "#0ea5e9",
                   **{n: p["color"] for n, p in PACKS.items()}}
 MODELS = {"plan": "claude-opus-5-5", "exec": "claude-sonnet-5-5", "review": "claude-opus-5-5",
           "explore": "claude-haiku-5-5", "test": "claude-sonnet-5-5"}  # explore/test = subagent models
@@ -96,6 +101,19 @@ def token(c):
     return f.read_text().strip() if f.exists() else call("POST", "/module/auth/login", {"login": c["login"], "password": c["password"]})["access"]
 
 
+def select(tag_names, assignees, owner):
+    """What to run for one task: (trigger tag, mode, runner) or None.
+    tag_names: names of the task's tags; assignees: emails of its assignees; owner: the user's email.
+    Assigned to the user -> never. Needs a mode tag (packs first) AND an AI assignee, which picks the runner."""
+    if owner and owner in assignees:
+        return None
+    trig = next((n for n in TRIGGERS if n in tag_names), None)
+    runner = ia_users.runner_of(assignees)
+    if not trig or not runner:
+        return None
+    return trig, TRIGGERS[trig], runner
+
+
 def main():
     dry = "--dry-run" in sys.argv
     lock = open(HERE / "logs/.ai-dispatch.lock", "w")
@@ -106,6 +124,10 @@ def main():
     c = dict(l.strip().split("=", 1) for l in (HERE / ".credentials").read_text().splitlines() if "=" in l)
     tok = token(c)
     api = lambda m, p, b=None: call(m, p, b, tok)["response"]
+    owner = ia_users.owner_email(c)
+    if not owner:  # without it the user's own tasks could be picked up
+        log("no owner email (ia-users.json owner / .credentials email): nothing runs")
+        return
 
     for g in api("GET", "/module/goals"):
         repo = REPOS.get(g["name"])
@@ -120,6 +142,8 @@ def main():
         if not any(n in tags for n in (*TRIGGERS, CONTINUE)):
             continue
         st = {s["name"]: s["id"] for s in api("POST", "/module/kanban/fetch-statuses", {"goalId": gid})}
+        collab = ia_users.collaborators(api, gid)
+        names = {v: k for k, v in tags.items()}
         for sname in ("TODO", "Backlog", "Review"):
             col = "null" if sname == "Backlog" else st.get(sname)  # Backlog is not a status row: tasks with no status, addressed as `null`
             if col is None:
@@ -129,7 +153,8 @@ def main():
                 r = api("GET", f"/module/kanban/tasks/{gid}/{col}/{cur}")
                 for t in r["tasks"]:
                     have = set(t.get("tags") or [])
-                    if tags.get("para-mí") in have or t.get("complete"):  # done tasks may keep a stale trigger tag
+                    who = ia_users.assignee_emails(t, collab)
+                    if owner in who or t.get("complete"):  # the user's own task; done tasks may keep a stale trigger tag
                         continue
                     if sname == "Review":  # only answered questions are picked up from Review
                         if tags.get(CONTINUE) not in have:
@@ -145,7 +170,7 @@ def main():
                             run(api, g, repo, st, tags, t, res["mode"], CONTINUE, res["runner"], res)
                             return
                         continue
-                    hit = next(((n, m, rn) for n, (m, rn) in TRIGGERS.items() if tags.get(n) in have), None)
+                    hit = select({names[i] for i in have if i in names}, who, owner)
                     if hit:
                         trig, mode, runner = hit
                         if dry:
@@ -235,7 +260,7 @@ OC_PERMISSION = {"bash": {"*": "allow", "git push*": "deny", "git reset*": "deny
                  "edit": "allow"}
 
 LIMIT_RE = re.compile(r"5-hour limit|hit your limit|usage limit|rate limit|limit reached", re.I)
-CLAUDE_LIMIT_FILE = HERE / "logs/.claude-limit-until"  # unix ts; while now < ts, ia·ejecutar routes to OpenCode
+CLAUDE_LIMIT_FILE = HERE / "logs/.claude-limit-until"  # unix ts; while now < ts, Claude's ia·ejecutar runs go to OpenCode
 
 
 def is_claude_limit(text):
@@ -285,15 +310,17 @@ def opencode_ok_check(ok, out, wt, review_base):
     dirty = subprocess.run(["git", "-C", str(wt), "status", "--porcelain"], capture_output=True, text=True).stdout.strip()
     ahead = subprocess.run(["git", "-C", str(wt), "rev-list", "--count", f"{review_base}..HEAD"], capture_output=True, text=True).stdout.strip()
     if not dirty and ahead in ("", "0"):
-        return False, f"{out}\n(OpenCode terminó sin cambios ni commits: se da por fallo. Reintenta con ia·ejecutar.)"
+        return False, f"{out}\n(OpenCode terminó sin cambios ni commits: se da por fallo. Reintenta o asigna la tarea a Claude.)"
     return ok, out
 
 
-def ask_opencode(prompt, cwd):
-    """Run one `opencode run` session with the same guard rails as the claude executor; returns (ok, text)."""
+def ask_opencode(prompt, cwd, readonly=False):
+    """Run one `opencode run` session with the same guard rails as the claude executor; returns (ok, text).
+    readonly (plan mode): no edits and no shell, only its read/search tools."""
+    perm = {"bash": "deny", "edit": "deny"} if readonly else OC_PERMISSION
     try:
         p = subprocess.run([OC_BIN, "run", "--model", OC_MODEL, "--dir", str(cwd), prompt], cwd=cwd, capture_output=True, text=True,
-                           timeout=OC_TIMEOUT, env={**os.environ, "PATH": f"{Path.home()}/.local/bin:{HIMALAYA_DIR}:{os.environ.get('PATH', '')}", "TASKVIEW_NOHOOK": "1", "TASKVIEW_TASK_ID": CURRENT_TASK, "OPENCODE_PERMISSION": json.dumps(OC_PERMISSION)})
+                           timeout=OC_TIMEOUT, env={**os.environ, "PATH": f"{Path.home()}/.local/bin:{HIMALAYA_DIR}:{os.environ.get('PATH', '')}", "TASKVIEW_NOHOOK": "1", "TASKVIEW_TASK_ID": CURRENT_TASK, "OPENCODE_PERMISSION": json.dumps(perm)})
         return p.returncode == 0, (p.stdout or p.stderr or "").strip()
     except subprocess.TimeoutExpired:
         return False, f"Timeout ({OC_TIMEOUT // 60} min)."
@@ -376,10 +403,15 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
             else:
                 prompt = (f"{ctx}\n{task_txt}\nAnaliza el repo y escribe un plan de implementación concreto: archivos a tocar, pasos, riesgos y cómo verificarlo. "
                           f"NO modifiques nada. {DELEGATE.replace(' y la ejecución de tests/build en el subagente `tester`', '')}{ASK_RULE}Responde en español, conciso, en markdown.")
-            ok, out, sid, _ = ask(prompt, "plan", MODELS["plan"], "plan", wt, agents=PLAN_AGENTS, resume=resume and resume["sid"])
-            sections.append((f"Plan de la IA · {MODELS['plan']}", ok, out))
-            if ok and question(out):
-                asked = sid
+            if runner == "opencode":  # no session resume and no subagents: plain read-only run
+                ok, out = ask_opencode(prompt.replace(DELEGATE.replace(' y la ejecución de tests/build en el subagente `tester`', ''), "").replace(ASK_RULE, ""), wt, readonly=True)
+                who = f"OpenCode · {OC_MODEL}"
+                sections.append((f"Plan de la IA · {who}", ok, out))
+            else:
+                ok, out, sid, _ = ask(prompt, "plan", MODELS["plan"], "plan", wt, agents=PLAN_AGENTS, resume=resume and resume["sid"])
+                sections.append((f"Plan de la IA · {MODELS['plan']}", ok, out))
+                if ok and question(out):
+                    asked = sid
         else:
             feedback = ""
             for attempt in range(1, MAX_ROUNDS + 1):

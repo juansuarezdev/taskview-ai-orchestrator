@@ -2,7 +2,7 @@
 """Weekly review, sent by email and as a notification on Sunday evening (launchd com.example.taskview-weekly).
 
 Read-only: queries Postgres through `docker exec` and parses selfhost/logs/ai-dispatch.log.
-- Closed this week per project, split own (para-mí) vs. the rest.
+- Closed this week per project, split own (assigned to the user) vs. the rest.
 - Stuck: Review or AI-question cards untouched for 7+ days.
 - AI runs of the last 7 days and the question rate.
 - Next week: due dates and the user's open priorities.
@@ -12,11 +12,25 @@ import json, os, re, subprocess, sys, time
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import ia_users
+
 HERE = Path(__file__).resolve().parent
 MAIL_TO = "you@example.com"
 HIMALAYA_DIR = "/opt/homebrew/bin"
 DOCKER = "/usr/local/bin/docker" if Path("/usr/local/bin/docker").exists() else "/opt/homebrew/bin/docker"
 BASELINE_ASK_RATE = 9 / 23
+
+
+def owner_email():
+    c = dict(l.strip().split("=", 1) for l in (HERE / ".credentials").read_text().splitlines() if "=" in l)
+    return ia_users.owner_email(c)
+
+
+def mine_sql():
+    """SQL condition: task `t` is assigned to the user."""
+    e = owner_email().replace("'", "''")
+    return f"""EXISTS (SELECT 1 FROM tasks_auth.task_assignee ta JOIN collaboration.users cu ON cu.id = ta.collab_user_id
+                     WHERE ta.task_id = t.id AND lower(cu.email) = '{e}')"""
 
 
 def sql(q):
@@ -35,10 +49,8 @@ def block(head, items, limit=15):
 
 
 def closed_this_week():
-    rows = sql("""
-      SELECT g.name, t.description,
-             EXISTS (SELECT 1 FROM tasks.tasks_to_tags tt JOIN tasks.tags tg ON tg.id = tt.tag_id
-                     WHERE tt.task_id = t.id AND tg.name = 'para-mí')
+    rows = sql(f"""
+      SELECT g.name, t.description, {mine_sql()}
       FROM tasks.tasks t JOIN tasks.goals g ON g.id = t.goal_id
       WHERE t.complete AND t.date_complete > now() - interval '7 days' AND COALESCE(g.archive, 0) = 0
       ORDER BY g.name, t.date_complete""")
@@ -106,14 +118,13 @@ def next_week():
         AND t.end_date BETWEEN current_date AND current_date + 7
       ORDER BY t.end_date, 4 DESC""")
     due = [f"{e} {d} ({g})" for g, d, e, _ in rows]
-    top = sql("""
+    top = sql(f"""
       SELECT g.name, t.description, COALESCE(t.priority_id, 1)
       FROM tasks.tasks t JOIN tasks.goals g ON g.id = t.goal_id
       LEFT JOIN tasks.statuses s ON s.id = t.status_id
       WHERE NOT COALESCE(t.complete, false) AND COALESCE(g.archive, 0) = 0
         AND (s.name IN ('TODO', 'In Progress'))
-        AND EXISTS (SELECT 1 FROM tasks.tasks_to_tags tt JOIN tasks.tags tg ON tg.id = tt.tag_id
-                    WHERE tt.task_id = t.id AND tg.name = 'para-mí')
+        AND {mine_sql()}
       ORDER BY 3 DESC, t.end_date NULLS LAST LIMIT 5""")
     return due, [f"{d} ({g})" for g, d, _ in top]
 
