@@ -1,6 +1,6 @@
 .env.*
 logs/
-.credentials
+.credentials*
 .jwt
 cj
 __pycache__/

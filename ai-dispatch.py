@@ -33,7 +33,7 @@ EXTRA_ROOTS = {"repo-r": Path.home() / "Projects/repo-r",  # boards whose folder
 WORKTREES = CODE / ".ai-worktrees"
 LOG = HERE / "logs/ai-dispatch.log"
 REPOS = {"Board M": "repo-m", "Board G": "repo-g", "Board E": "repo-e", "TaskView": "taskview-community", "Board R": "repo-r", "Board GC": "repo-gc", "Board SB": "repo-sb", "local-model": "local-model",
-         "Board A": "repo-a", "Board H": "repo-h", "Inbox": "inbox"}
+         "Board A": "repo-a", "Board H": "repo-h", "Inbox": "inbox", "Board C": "repo-c"}
 TRIGGERS = {"ia·plan": "plan", "ia·ejecutar": "exec"}  # mode tag -> mode; the runner comes from the assignee
 # packs (ia-packs.json): one tag = a mode tag + optional mail, so tasks need a single tag; they win over loose triggers
 PACKS = json.loads((HERE / "ia-packs.json").read_text()) if (HERE / "ia-packs.json").exists() else {}
