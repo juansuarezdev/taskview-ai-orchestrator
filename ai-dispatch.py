@@ -319,7 +319,7 @@ def ask_opencode(prompt, cwd, readonly=False):
     readonly (plan mode): no edits and no shell, only its read/search tools."""
     perm = {"bash": "deny", "edit": "deny"} if readonly else OC_PERMISSION
     try:
-        p = subprocess.run([OC_BIN, "run", "--model", OC_MODEL, "--dir", str(cwd), prompt], cwd=cwd, capture_output=True, text=True,
+        p = subprocess.run([OC_BIN, "run", "--model", OC_MODEL, prompt], cwd=cwd, capture_output=True, text=True,
                            timeout=OC_TIMEOUT, env={**os.environ, "PATH": f"{Path.home()}/.local/bin:{HIMALAYA_DIR}:{os.environ.get('PATH', '')}", "TASKVIEW_NOHOOK": "1", "TASKVIEW_TASK_ID": CURRENT_TASK, "OPENCODE_PERMISSION": json.dumps(perm)})
         return p.returncode == 0, (p.stdout or p.stderr or "").strip()
     except subprocess.TimeoutExpired:
