@@ -19,7 +19,7 @@ Packs (ia-packs.json): ia·pack·analizar / implementar / barato / silencioso = 
 Tag ia·correo on a task: when its run ends the result is emailed (send-mail) and the tag is removed.
 One task at a time (flock). Run every minute from launchd. `--dry-run` only lists.
 """
-import fcntl, html, json, os, re, subprocess, sys, time, urllib.request
+import base64, fcntl, html, json, os, re, subprocess, sys, time, urllib.request
 from pathlib import Path
 
 import ia_users
@@ -70,10 +70,27 @@ CONTEXT_MIN = 80  # chars of note below which the task gets a pre-context pass
 MAX_ROUNDS = 3  # execute + review rounds when the review asks for changes
 BUDGET = {"plan": "2", "exec": "5", "review": "2"}
 TIMEOUT = {"plan": 15 * 60, "exec": 40 * 60, "review": 15 * 60}
-ALLOWED = ["Read", "Glob", "Grep", "Edit", "Write", "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git add:*)",
-           "Bash(git commit:*)", "Bash(ls:*)", "Bash(npm:*)", "Bash(npx:*)", "Bash(pnpm:*)", "Bash(python3:*)", "Bash(node:*)", "Bash(send-mail:*)"]
+_ALLOWED_BASH = ["git status", "git diff", "git log", "git show", "git add", "git commit", "ls", "cat", "head", "tail", "wc", "grep", "find", "which",
+                 "npm", "npx", "pnpm", "python3", "node", "send-mail", "composer install", "composer dump-autoload",
+                 "php -l", "php -v", "php artisan test", "php vendor/bin/phpunit", "php vendor/bin/pest", "vendor/bin/pint", "php vendor/bin/pint"]
+_DENIED_BASH = ["git push", "rm", "curl", "sudo", "git reset", "git checkout main", "git merge", "git rebase", "git switch main",
+                "git commit --no-verify", "git commit -n"]
+# The user's RTK PreToolUse hook rewrites commands before the permission check (`git add` -> `rtk git add`, `cat`/`head` -> `rtk read`,
+# `vendor/bin/pint` -> `rtk pint`), so every allow AND deny rule also needs its rtk form; without it headless sessions were denied even
+# `git add -A` (2026-11-14, SiteApp t368-t379) and `git push` slipped past the deny list as `rtk git push`.
+_RTK_ALIAS = {"cat": "read", "head": "read", "vendor/bin/pint": "pint", "php vendor/bin/pint": "pint"}
+
+
+def _bash_rules(cmds):
+    out = []
+    for c in cmds:
+        out += [f"Bash({c}:*)", f"Bash(rtk {_RTK_ALIAS.get(c, c)}:*)"]
+    return list(dict.fromkeys(out))
+
+
+ALLOWED = ["Read", "Glob", "Grep", "Edit", "Write", *_bash_rules(_ALLOWED_BASH)]
 WEB = ["WebSearch", "WebFetch"]  # analysis (plan) sessions may research the web
-DENIED = ["Bash(git push:*)", "Bash(rm:*)", "Bash(curl:*)", "Bash(sudo:*)", "Bash(git reset:*)", "Bash(git checkout main:*)"]
+DENIED = _bash_rules(_DENIED_BASH)
 
 
 def log(msg):
@@ -230,6 +247,50 @@ def fmt_review(so):
 
 
 CURRENT_TASK = ""  # id of the task being run; child sessions get it as TASKVIEW_TASK_ID
+RUN_ENV = {}  # extra env for the sessions of the task being run (test DB, PHP memory); set in run()
+HERD_BIN = str(Path.home() / ".config/herd-lite/bin")  # php/composer; launchd PATH does not include it
+TEST_ENV_REPOS = {"repo-c"}  # Laravel+Sail repos: `php artisan test` in the worktree against the Sail Postgres `testing` DB
+TEST_HINT = ("\nTests: el dispatcher ya dejó vendor/, node_modules/ y public/build listos (si faltan, `composer install`, `npm ci` y `npm run build`). Ejecuta `php artisan test` (o `php vendor/bin/phpunit`): el entorno ya apunta a la BD `testing` "
+             "de Sail (Postgres; SQLite no sirve por btree_gist). No uses sail up, ni migraciones contra la BD de desarrollo, ni toques .env. "
+             "Commits con `git add` y `git commit` solo en tu rama ai/t<id>; nunca push, merge, rebase ni cambiar a main.\n")
+
+
+def repo_test_env(base):
+    """Env so tests in a worktree use the Sail Postgres testing DB via its host port, without a .env in the worktree."""
+    try:
+        e = {k.strip(): v.strip().strip('"') for k, v in (l.split("=", 1) for l in (base / ".env").read_text().splitlines() if "=" in l and not l.lstrip().startswith("#"))}
+    except Exception:
+        return {}
+    return {"DB_CONNECTION": "pgsql", "DB_HOST": "127.0.0.1", "DB_PORT": e.get("FORWARD_DB_PORT") or "5432", "DB_DATABASE": "testing",
+            "DB_USERNAME": e.get("DB_USERNAME", "sail"), "DB_PASSWORD": e.get("DB_PASSWORD", ""),
+            "APP_KEY": "base64:" + base64.b64encode(os.urandom(32)).decode(), "PHP_INI_SCAN_DIR": f":{HERE / 'php-ini'}"}  # memory_limit=1G (dompdf)
+
+
+def prepare_worktree(wt):
+    """Install what tests need in a fresh worktree (vendor/, node_modules/, public/build), so the session can run them.
+    Done by the dispatcher, not the model: sessions burned their budget on this and then could not get approval. Returns (ok, detail)."""
+    env = {**os.environ, "PATH": f"{HERD_BIN}:{os.environ.get('PATH', '')}", "COMPOSER_NO_INTERACTION": "1"}
+    steps = []
+    if (wt / "composer.json").exists() and not (wt / "vendor").exists():
+        steps.append(["composer", "install", "-q", "--no-interaction", "--no-progress"])
+    if (wt / "package-lock.json").exists() and not (wt / "node_modules").exists():
+        steps.append(["npm", "ci", "--no-audit", "--no-fund", "--loglevel=error"])
+    if (wt / "package.json").exists() and not (wt / "public/build/manifest.json").exists():
+        steps.append(["npm", "run", "build", "--silent"])
+    for cmd in steps:
+        p = subprocess.run(cmd, cwd=wt, env=env, capture_output=True, text=True, timeout=15 * 60)
+        if p.returncode != 0:
+            return False, f"`{' '.join(cmd)}` falló:\n{(p.stderr or p.stdout)[-1500:]}"
+    return True, ", ".join(" ".join(c[:2]) for c in steps) or "ya preparado"
+
+
+def commit_message(tid, title, attempt):
+    """Conventional subject cut at a word boundary (the old one was description[:72], cut mid-word)."""
+    head = f"chore(t{tid}): "
+    tail = f" (ronda {attempt})" if attempt > 1 else ""
+    room = 72 - len(head) - len(tail)
+    text = title if len(title) <= room else title[:room].rsplit(" ", 1)[0].rstrip(",.;:") + "…"
+    return head + text + tail
 
 
 def ask(prompt, perm, model, mode, cwd, agents=None, schema=None, resume=None):
@@ -240,7 +301,7 @@ def ask(prompt, perm, model, mode, cwd, agents=None, schema=None, resume=None):
         p = subprocess.run(["claude", "-p", prompt, "--model", model, "--permission-mode", perm, "--max-budget-usd", BUDGET[mode],
                             "--output-format", "json", *extra,
                             "--allowedTools", *ALLOWED, *(WEB if perm == "plan" else []), "--disallowedTools", *DENIED],
-                           cwd=cwd, env={**os.environ, "PATH": f"{Path.home()}/.local/bin:{HIMALAYA_DIR}:{os.environ.get('PATH', '')}", "TASKVIEW_NOHOOK": "1", "TASKVIEW_TASK_ID": CURRENT_TASK}, capture_output=True, text=True, timeout=TIMEOUT[mode])
+                           cwd=cwd, env={**os.environ, "PATH": f"{Path.home()}/.local/bin:{HERD_BIN}:{HIMALAYA_DIR}:{os.environ.get('PATH', '')}", "TASKVIEW_NOHOOK": "1", "TASKVIEW_TASK_ID": CURRENT_TASK, "AI_DISPATCH": "1", **RUN_ENV}, capture_output=True, text=True, timeout=TIMEOUT[mode])
     except subprocess.TimeoutExpired:
         return False, f"Timeout ({TIMEOUT[mode] // 60} min).", None, None
     except Exception as e:
@@ -256,7 +317,9 @@ OC_BIN = str(Path.home() / ".opencode/bin/opencode")  # launchd PATH does not in
 _OC_FILE = HERE / ".opencode-model"  # one line, e.g. opencode/nemotron-3-ultra-free; overrides the default below
 OC_MODEL = _OC_FILE.read_text().strip() if _OC_FILE.exists() else "opencode/deepseek-v4.1-flash-free"  # free model; no paid OpenCode plan
 OC_TIMEOUT = 40 * 60
-OC_PERMISSION = {"bash": {"*": "allow", "git push*": "deny", "git reset*": "deny", "rm *": "deny", "sudo*": "deny", "curl*": "deny", "wget*": "deny"},
+OC_PERMISSION = {"bash": {"*": "allow", "git push*": "deny", "git reset*": "deny", "rm *": "deny", "sudo*": "deny", "curl*": "deny", "wget*": "deny",
+                          "git merge*": "deny", "git rebase*": "deny", "git checkout main*": "deny", "git switch main*": "deny",
+                          "*--no-verify*": "deny"},
                  "edit": "allow"}
 
 LIMIT_RE = re.compile(r"5-hour limit|hit your limit|usage limit|rate limit|limit reached", re.I)
@@ -320,7 +383,7 @@ def ask_opencode(prompt, cwd, readonly=False):
     perm = {"bash": "deny", "edit": "deny"} if readonly else OC_PERMISSION
     try:
         p = subprocess.run([OC_BIN, "run", "--model", OC_MODEL, prompt], cwd=cwd, capture_output=True, text=True,
-                           timeout=OC_TIMEOUT, env={**os.environ, "PATH": f"{Path.home()}/.local/bin:{HIMALAYA_DIR}:{os.environ.get('PATH', '')}", "TASKVIEW_NOHOOK": "1", "TASKVIEW_TASK_ID": CURRENT_TASK, "OPENCODE_PERMISSION": json.dumps(perm)})
+                           timeout=OC_TIMEOUT, env={**os.environ, "PATH": f"{Path.home()}/.local/bin:{HERD_BIN}:{HIMALAYA_DIR}:{os.environ.get('PATH', '')}", "TASKVIEW_NOHOOK": "1", "TASKVIEW_TASK_ID": CURRENT_TASK, "AI_DISPATCH": "1", **RUN_ENV, "OPENCODE_PERMISSION": json.dumps(perm)})
         return p.returncode == 0, (p.stdout or p.stderr or "").strip()
     except subprocess.TimeoutExpired:
         return False, f"Timeout ({OC_TIMEOUT // 60} min)."
@@ -345,7 +408,7 @@ def notify_detail(done_tag, sections):
 
 def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
     tid = t["id"]
-    global CURRENT_TASK
+    global CURRENT_TASK, RUN_ENV
     CURRENT_TASK = str(tid)
     if mode == "exec" and runner == "claude" and claude_is_limited():
         log(f"t{tid} claude en cooldown → runner=opencode")
@@ -367,6 +430,8 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
     mbase0 = re.search(r"(?im)^WORKTREE_BASE:\s*(\S+)", note or "")
     review_base = (mbase0.group(1) if mbase0 else "main")
     ctx = board_context(api, goal, st, t)
+    RUN_ENV = repo_test_env(base) if repo in TEST_ENV_REPOS else {}
+    ctx += TEST_HINT if RUN_ENV else ""
     ctx += ("\nCorreo: si la tarea pide enviar un correo, usa `send-mail --to you@example.com --subject \"...\" --text \"...\" [--html FILE] [--attach FILE]`. "
             "Solo a ese destinatario; cualquier otro, pregunta antes con PREGUNTA:.\n")
     stamp = lambda: time.strftime("%F %H:%M")
@@ -389,6 +454,11 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
                 start = "main" if subprocess.run(["git", "-C", str(base), "rev-parse", "--verify", "main"], capture_output=True).returncode == 0 else "HEAD"
             review_base = start
             subprocess.run(["git", "-C", str(base), "worktree", "add", "-b", branch, str(wt), start], check=True, capture_output=True)
+        if mode == "exec" and repo in TEST_ENV_REPOS and not in_place:
+            pok, pdet = prepare_worktree(wt)
+            log(f"t{tid} prepare_worktree ok={pok} {pdet[:120]}")
+            if not pok:
+                sections.append(("Preparación del worktree", False, pdet + "\nLos tests no podrán ejecutarse hasta resolverlo."))
         if not resume and len(re.sub(r"<[^>]+>", " ", note).strip()) < CONTEXT_MIN:  # thin task: a cheap model gathers context first, fewer questions later
             cok, cout, _, _ = ask(f"{ctx}\nTarea de TaskView #{tid}: {t['description']}\n\nLa tarea tiene poca descripción. Explora el repo (solo lectura) y escribe, en español y en "
                                   "máximo 8 líneas, el contexto útil para quien la haga: archivos y módulos relevantes, estado actual y los supuestos razonables que tomarías. "
@@ -442,15 +512,15 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
                         sid = None
                         ok, out = opencode_ok_check(ok, out, wt, review_base)
                 sections.append((f"Resultado de la IA · {who}{tag}", ok, out))
-                if ok and runner == "claude" and question(out):
-                    asked = sid  # leave the worktree as is; the resumed session keeps working on it
-                    break
                 if ok and subprocess.run(["git", "-C", str(wt), "status", "--porcelain"], capture_output=True, text=True).stdout.strip():
-                    # headless sessions cannot get approval for git add/commit, so the dispatcher commits what the model left behind
+                    # Safety net for whatever the model left uncommitted; also before a question, so the work is never left only on disk.
+                    msg = commit_message(tid, t["description"], attempt)
                     subprocess.run(["git", "-C", str(wt), "add", "-A"], capture_output=True)
-                    c = subprocess.run(["git", "-C", str(wt), "commit", "-q", "-m", t["description"][:72] + (f" (ronda {attempt})" if attempt > 1 else "")],
-                                       capture_output=True, text=True)
-                    sections.append(("Commit del dispatcher", c.returncode == 0, c.stdout + c.stderr or t["description"][:72]))
+                    c = subprocess.run(["git", "-C", str(wt), "commit", "-q", "-m", msg], capture_output=True, text=True)
+                    sections.append(("Commit del dispatcher", c.returncode == 0, c.stdout + c.stderr or msg))
+                if ok and runner == "claude" and question(out):
+                    asked = sid  # the resumed session keeps working on the same worktree
+                    break
                 if not ok:
                     break
                 rok, rout, _, so = ask(f"{ctx}\n{task_txt}\nOtra IA implementó esta tarea en la rama {branch} (worktree actual). Revisa con `git diff {review_base}...HEAD` y `git log {review_base}..HEAD` (base de la tarea, no necesariamente main): "
