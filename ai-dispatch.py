@@ -157,6 +157,16 @@ def select(tag_names, assignees, owner):
     return trig, TRIGGERS[trig], runner
 
 
+LAST_GOAL_FILE = HERE / "logs/.last-goal"  # board of the last card started (round-robin across boards)
+
+
+def mark_goal(gid):
+    try:
+        LAST_GOAL_FILE.write_text(str(gid))
+    except OSError:
+        pass
+
+
 def main():
     dry = "--dry-run" in sys.argv
     if "--usage" in sys.argv:  # read-only report; `--usage --probe` refreshes the figures first (one tiny Haiku call)
@@ -213,7 +223,15 @@ def main():
         log("no owner email (ia-users.json owner / .credentials email): nothing runs")
         return
 
-    for g in api("GET", "/module/goals"):
+    # Fair share: start after the board that ran last, so one board with a long queue doesn't take every turn
+    goals = api("GET", "/module/goals")
+    try:
+        last = int(LAST_GOAL_FILE.read_text().strip())
+        i = next(k for k, x in enumerate(goals) if x["id"] == last)
+        goals = goals[i + 1:] + goals[:i + 1]
+    except (OSError, ValueError, StopIteration):
+        pass
+    for g in goals:
         repo = REPOS.get(g["name"])
         if not repo or g.get("archive"):
             continue
@@ -258,6 +276,7 @@ def main():
                         elif res["runner"] == "claude" and claude_paced():
                             pass  # held: a Claude session cannot resume elsewhere; it continues when the window allows
                         else:
+                            mark_goal(gid)
                             run(api, g, repo, st, tags, t, res["mode"], CONTINUE, res["runner"], res)
                             return
                         continue
@@ -277,6 +296,7 @@ def main():
                                     continue  # held; cards of other runners further down may still start
                                 log(f"t{t['id']} pacing → runner=opencode")
                                 runner = "opencode"
+                            mark_goal(gid)
                             run(api, g, repo, st, tags, t, mode, trig, runner)
                             return  # one task per tick
                 cur = str(r["nextCursor"]) if r.get("nextCursor") else ""
