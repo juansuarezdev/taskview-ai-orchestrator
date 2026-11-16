@@ -54,6 +54,10 @@ def last_limit_signal(path, max_lines=120):
             o = json.loads(line)
         except Exception:
             continue
+        # Limit notices are written by Claude Code itself (assistant message with apiError, or system).
+        # User prompts / api-request blobs may quote an old limit text (e.g. a TaskView note): ignore them.
+        if o.get("type") not in ("assistant", "system"):
+            continue
         parts = [str(o.get("content") or "")]
         msg = o.get("message") or {}
         c = msg.get("content")
@@ -72,6 +76,27 @@ def last_limit_signal(path, max_lines=120):
     if not last:
         return None, None, None
     return last
+
+
+def ts_epoch(ts):
+    """ISO-8601 transcript timestamp ('2026-11-14T21:59:03.123Z') -> unix seconds, or None."""
+    from datetime import datetime
+    try:
+        return datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
+
+
+def is_fresh_hit(ts, started_ms, max_age=3600):
+    """A limit message only counts if it was written by this process run and recently.
+    A resumed session (claude --resume / -r) carries old limit messages in its transcript:
+    those must not trigger a new cooldown (false positives 2026-11-16 07:54 and 08:46)."""
+    t = ts_epoch(ts)
+    if t is None:
+        return False
+    if started_ms and t < started_ms / 1000 - 60:
+        return False
+    return time.time() - t <= max_age
 
 
 def last_user_text(path, max_lines=400):
@@ -189,6 +214,8 @@ def main():
             continue
         kind, ts, snippet = last_limit_signal(tp)
         if kind != "hit":
+            continue
+        if not is_fresh_hit(ts, o.get("startedAt")):
             continue
         if already_done(sid, ts):
             continue
