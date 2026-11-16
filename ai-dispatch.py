@@ -21,7 +21,7 @@ Packs (ia-packs.json): ia·pack·analizar / implementar / barato / silencioso = 
 Tag ia·correo on a task: when its run ends the result is emailed (send-mail) and the tag is removed.
 One task at a time (flock). Run every minute from launchd. `--dry-run` only lists. `--integrate-main <repo> <branch>` retries a 29/30 merge into main (same path as after ia·hecho; never --force).
 """
-import base64, fcntl, html, json, os, re, subprocess, sys, time, urllib.request
+import base64, fcntl, html, json, os, re, subprocess, sys, tempfile, time, urllib.request
 from pathlib import Path
 
 import ia_users
@@ -159,6 +159,11 @@ def select(tag_names, assignees, owner):
 
 def main():
     dry = "--dry-run" in sys.argv
+    if "--usage" in sys.argv:  # read-only report; `--usage --probe` refreshes the figures first (one tiny Haiku call)
+        if "--probe" in sys.argv:
+            probe_usage()
+        print(usage_report())
+        return
     integrate_args = None
     if "--integrate-main" in sys.argv:
         argv = sys.argv[1:]
@@ -198,6 +203,8 @@ def main():
                 mark.write_text(until)
                 log(f"pausa: Claude en cooldown y OpenCode agotado; no se arranca nada hasta {time.strftime('%H:%M', time.localtime(float(until)))}")
             return
+    if not dry:
+        usage_alerts(usage_now())
     c = dict(l.strip().split("=", 1) for l in (HERE / ".credentials").read_text().splitlines() if "=" in l)
     tok = token(c)
     api = lambda m, p, b=None: call(m, p, b, tok)["response"]
@@ -248,6 +255,8 @@ def main():
                             toggle(api, tags, t, CONTINUE, False)
                             log(f"continue t{t['id']} skipped: {err}")
                             subprocess.run([sys.executable, str(HERE / "notify.py"), f"IA: {t['description'][:60]}", f"No puedo continuar: {err}", "3", "--task", str(t["id"])])
+                        elif res["runner"] == "claude" and claude_paced():
+                            pass  # held: a Claude session cannot resume elsewhere; it continues when the window allows
                         else:
                             run(api, g, repo, st, tags, t, res["mode"], CONTINUE, res["runner"], res)
                             return
@@ -263,6 +272,11 @@ def main():
                         if dry:
                             print(f"[{g['name']}] t{t['id']} {mode}/{runner} base={worktree_base(repo, t.get('note')) or 'main'}: {t['description']}")
                         else:
+                            if runner == "claude" and claude_paced():
+                                if mode != "exec" or opencode_exhausted():
+                                    continue  # held; cards of other runners further down may still start
+                                log(f"t{t['id']} pacing → runner=opencode")
+                                runner = "opencode"
                             run(api, g, repo, st, tags, t, mode, trig, runner)
                             return  # one task per tick
                 cur = str(r["nextCursor"]) if r.get("nextCursor") else ""
@@ -402,17 +416,28 @@ def ask(prompt, perm, model, mode, cwd, agents=None, schema=None, resume=None, b
              *(["--resume", resume] if resume else [])]
     try:
         p = subprocess.run(["claude", "-p", prompt, "--model", model, "--permission-mode", perm, "--max-budget-usd", budget or BUDGET[mode],
-                            "--output-format", "json", *extra,
+                            "--output-format", "stream-json", "--verbose", *extra,
                             "--allowedTools", *ALLOWED, *(WEB if perm == "plan" else []), "--disallowedTools", *DENIED],
                            cwd=cwd, env={**os.environ, "PATH": f"{Path.home()}/.local/bin:{HERD_BIN}:{HIMALAYA_DIR}:{os.environ.get('PATH', '')}", "TASKVIEW_NOHOOK": "1", "TASKVIEW_TASK_ID": CURRENT_TASK, "AI_DISPATCH": "1", **RUN_ENV}, capture_output=True, text=True, timeout=timeout or TIMEOUT[mode])
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as e:
+        record_usage(e.stdout.decode(errors="replace") if isinstance(e.stdout, bytes) else e.stdout)
         return False, f"Timeout ({(timeout or TIMEOUT[mode]) // 60} min).", None, None
     except Exception as e:
         return False, f"Error: {e}", None, None
-    try:
-        o = json.loads(p.stdout)
-    except ValueError:  # not JSON (crash before output): keep whatever text there is
-        return False, (p.stdout or p.stderr or "").strip(), None, None
+    snap = record_usage(p.stdout)
+    o, plain = None, []
+    for line in p.stdout.splitlines():  # stream-json: one event per line, the last `result` is what --output-format json printed
+        try:
+            j = json.loads(line)
+        except ValueError:
+            plain.append(line)
+            continue
+        if isinstance(j, dict) and j.get("type") == "result":
+            o = j
+    if o is None:  # no result event (crash before output): keep whatever plain text there is
+        return False, ("\n".join(plain) or p.stderr or "").strip(), None, None
+    if snap:  # one line per run: what it cost and where the windows are, to calibrate BUDGET against the 5h window
+        log(f"usage t{CURRENT_TASK} {mode} {model} cost=${float(o.get('total_cost_usd') or 0):.2f} 5h={snap['five_pct']:.0f}% 7d={'%.0f' % snap['week_pct'] if snap.get('week_pct') is not None else '?'}%")
     return p.returncode == 0 and not o.get("is_error"), (o.get("result") or "").strip(), o.get("session_id"), o.get("structured_output")
 
 
@@ -516,6 +541,182 @@ def mark_claude_limited(text=None, hours=5):
     CLAUDE_LIMIT_FILE.parent.mkdir(exist_ok=True)
     CLAUDE_LIMIT_FILE.write_text(str(until))
     log(f"claude limit until {time.strftime('%F %T', time.localtime(until))}")
+
+
+# --- Usage pacing: make the 5h window last at least PACE_HOURS instead of reacting only once the limit is hit ---
+# Figures come from the `rate_limit_event` lines of `claude -p --output-format stream-json` (five_hour / seven_day
+# utilization + reset time): ask() saves them after every run and a tiny Haiku probe refreshes them when they are
+# stale. Newer samples from the interactive statusline (statusline-burn.tsv, same window) raise the figure.
+USAGE_FILE = HERE / "logs/usage-snapshot.json"
+BURN_TSV = Path.home() / ".claude/state/statusline-burn.tsv"  # "<unix ts>\t<5h %>" lines, read-only here
+PACE_HOURS = 4  # the window must last at least this long
+PACE_SLACK = 10  # % allowed on top of the straight line
+PACE_HARD = 90  # % from which no Claude run starts, whatever the line says
+USAGE_STALE = 15 * 60  # older figures are only a lower bound
+USAGE_ALERTS = (70, 90)  # one phone alert per window at each level
+PROBE_MODEL = "claude-haiku-4-5"
+
+
+def parse_usage(stdout):
+    """Latest usage snapshot in a stream-json output, or None."""
+    snap = None
+    for line in (stdout or "").splitlines():
+        if '"rate_limit_event"' not in line:
+            continue
+        try:
+            info = json.loads(line).get("rate_limit_info") or {}
+            win = info.get("unifiedWindows") or {}
+            five, week = win.get("five_hour") or {}, win.get("seven_day") or {}
+            if not five and info.get("rateLimitType") == "five_hour":
+                five = info
+            if five.get("utilization") is None or not five.get("resetsAt"):
+                continue
+            snap = {"ts": time.time(), "five_pct": round(float(five["utilization"]) * 100, 1), "five_resets": float(five["resetsAt"]),
+                    "week_pct": round(float(week["utilization"]) * 100, 1) if week.get("utilization") is not None else None,
+                    "week_resets": week.get("resetsAt"), "source": "claude -p"}
+        except Exception:
+            continue
+    return snap
+
+
+def record_usage(stdout, source=None):
+    """Save the snapshot found in a claude run's output (if any) and fire the level alerts; returns it."""
+    snap = parse_usage(stdout)
+    if not snap:
+        return None
+    if source:
+        snap["source"] = source
+    try:
+        USAGE_FILE.parent.mkdir(exist_ok=True)
+        tmp = USAGE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(snap))
+        os.replace(tmp, USAGE_FILE)
+        usage_alerts(snap)
+    except Exception:
+        pass
+    return snap
+
+
+def usage_now(now=None):
+    """Saved snapshot of the window in force, raised by newer statusline samples; None when nothing is known about it."""
+    now = now or time.time()
+    try:
+        s = json.loads(USAGE_FILE.read_text())
+        s["ts"], s["five_pct"], s["five_resets"] = float(s["ts"]), float(s["five_pct"]), float(s["five_resets"])
+    except Exception:
+        return None
+    if now >= s["five_resets"]:  # that window is over
+        return None
+    try:
+        taken = s["ts"]
+        for line in BURN_TSV.read_text().splitlines()[-200:]:
+            ts, pct = (float(x) for x in line.split()[:2])
+            if taken < ts <= now:  # usage only grows inside a window, so the highest newer sample wins
+                s["ts"] = max(s["ts"], ts)
+                if pct > s["five_pct"]:
+                    s["five_pct"], s["source"] = pct, "statusline"
+    except Exception:
+        pass
+    return s
+
+
+def pace(s, now=None):
+    """(hold, used %, minutes into the window, allowed %): allowed = min(100, elapsed/240*100 + slack); hold above it or from PACE_HARD."""
+    now = now or time.time()
+    elapsed = max(0.0, 300 - (s["five_resets"] - now) / 60)
+    allowed = min(100.0, elapsed / (PACE_HOURS * 60) * 100 + PACE_SLACK)
+    return s["five_pct"] > allowed or s["five_pct"] >= PACE_HARD, s["five_pct"], elapsed, allowed
+
+
+def probe_usage():
+    """One minimal Haiku call just to read the rate-limit figures; returns the snapshot or None."""
+    try:
+        p = subprocess.run(["claude", "-p", "Reply with: ok", "--model", PROBE_MODEL, "--max-budget-usd", "0.3", "--output-format", "stream-json",
+                            "--verbose", "--allowedTools", "Read"], cwd=tempfile.gettempdir(), capture_output=True, text=True, timeout=120,
+                           env={**os.environ, "PATH": f"{Path.home()}/.local/bin:{os.environ.get('PATH', '')}", "TASKVIEW_NOHOOK": "1", "AI_DISPATCH": "1"})
+    except Exception:
+        return None
+    return record_usage(p.stdout, "probe")
+
+
+_PACING = []  # this tick's decision, taken once
+
+
+def pacing():
+    """Decision before starting a Claude run: None = no usage data (behave as before), else (hold, used, elapsed, allowed)."""
+    if not _PACING:
+        s = usage_now()
+        # stale or missing figures are refreshed, unless the stale one (a lower bound) already says hold
+        if not (s and (time.time() - s["ts"] < USAGE_STALE or pace(s)[0])):
+            probe_usage()
+            s = usage_now()
+        _PACING.append(pace(s) if s else None)
+    return _PACING[0]
+
+
+def claude_paced():
+    """True when no Claude run should start now; logs the hold at most once per 10 min."""
+    d = pacing()
+    if not d or not d[0]:
+        return False
+    mark = HERE / "logs/.pacing-mark"
+    try:
+        last = float(mark.read_text())
+    except Exception:
+        last = 0
+    if time.time() - last >= 600:
+        mark.write_text(str(time.time()))
+        log(f"pacing: {d[1]:.0f}% used, {d[2]:.0f} min into window, allowed {d[3]:.0f}%, holding")
+    return True
+
+
+def opencode_exhausted():
+    """OpenCode and its reserve ran out of quota less than 6 h ago (same test as the pause in main)."""
+    try:
+        return time.time() - float(json.loads(ALERT_FILE.read_text()).get("last_event", 0)) < 6 * 3600
+    except Exception:
+        return False
+
+
+def usage_alerts(s):
+    """One notification per window at each level of USAGE_ALERTS."""
+    if not s:
+        return
+    f = HERE / "logs/.usage-alerts"
+    try:
+        st = json.loads(f.read_text())
+    except Exception:
+        st = {}
+    if st.get("resets") != int(s["five_resets"]):
+        st = {"resets": int(s["five_resets"]), "sent": []}
+    due = [l for l in USAGE_ALERTS if s["five_pct"] >= l and l not in st["sent"]]
+    if not due:
+        return
+    st["sent"] += due
+    f.write_text(json.dumps(st))
+    reset = time.strftime("%H:%M", time.localtime(s["five_resets"]))
+    log(f"usage alert: {s['five_pct']:.0f}% of the 5h window, resets {reset}")
+    subprocess.run([sys.executable, str(HERE / "notify.py"), f"Claude 5h al {s['five_pct']:.0f}%",
+                    f"Superado el {max(due)}% de la ventana; se renueva a las {reset}. "
+                    + ("No arranco más tarjetas con Claude hasta entonces." if max(due) >= PACE_HARD else "El dispatcher frena el ritmo de Claude."),
+                    "4" if max(due) >= PACE_HARD else "3"])
+
+
+def usage_report():
+    s = usage_now()
+    cool = f"cooldown until {time.strftime('%H:%M', time.localtime(float(CLAUDE_LIMIT_FILE.read_text().strip())))}" if claude_is_limited() else "no cooldown"
+    tail = f"claude: {cool} · opencode: {'exhausted' if opencode_exhausted() else 'available'}"
+    if not s:
+        return f"usage: no data for the current window (dispatcher behaves as before; a probe runs before the next Claude card)\n{tail}"
+    hold, used, elapsed, allowed = pace(s)
+    week = f"{s['week_pct']:.0f}%" + (f" (resets {time.strftime('%a %H:%M', time.localtime(float(s['week_resets'])))})" if s.get("week_resets") else "") if s.get("week_pct") is not None else "?"
+    age = (time.time() - s["ts"]) / 60
+    why = f"hard stop from {PACE_HARD}%" if used >= PACE_HARD else f"{used:.0f}% > allowed {allowed:.0f}%"
+    return (f"5h window: {used:.0f}% used, resets {time.strftime('%H:%M', time.localtime(s['five_resets']))} ({elapsed:.0f} min into window)\n"
+            f"7d window: {week}\n"
+            f"snapshot: {age:.0f} min old, source {s.get('source', '?')}{' (stale: lower bound, re-probed before a start)' if age * 60 >= USAGE_STALE else ''}\n"
+            f"pacing: allowed {allowed:.0f}% now (elapsed/{PACE_HOURS * 60}*100 + {PACE_SLACK}, hard stop {PACE_HARD}%)\n"
+            f"decision: {'HOLD Claude (' + why + '); exec cards go to OpenCode if available' if hold else 'OK to start Claude'}\n{tail}")
 
 
 def opencode_ok_check(ok, out, wt, review_base):
@@ -827,6 +1028,13 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
                     asked = sid  # the resumed session keeps working on the same worktree
                     break
                 if not ok:
+                    break
+                s_use = usage_now()
+                if s_use and s_use["five_pct"] >= PACE_HARD:  # hard stop: no new Claude run this late in the window
+                    sections.append((f"Revisión · {MODELS['review']}{tag}", False,
+                                     f"(Revisión aplazada: ventana de 5h de Claude al {s_use['five_pct']:.0f}%; worktree conservado. Reencolar tras el reset.)"))
+                    log(f"t{tid} pacing: {s_use['five_pct']:.0f}% used, review deferred")
+                    review_deferred = True
                     break
                 rok, rout, _, so = ask(f"{ctx}\n{task_txt}\nOtra IA implementó esta tarea en la rama {branch} (worktree actual). Revisa con `git diff {review_base}...HEAD` y `git log {review_base}..HEAD` (base de la tarea, no necesariamente main): "
                                 "¿cumple lo pedido?, ¿bugs, casos límite, seguridad o cambios fuera de alcance?, ¿faltan tests? NO modifiques nada. "
