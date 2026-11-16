@@ -63,7 +63,7 @@ PROGRESS = {"ia·trabajando": "#f59e0b", "ia·plan-listo": "#3b82f6", "ia·hecho
 USER_TAGS = {"flujo-ia": "#14b8a6"}  # created on every served board too: flujo-ia = Bandeja IA list
 TRIGGER_COLORS = {"ia·plan": "#3b82f6", "ia·ejecutar": "#f97316", CONTINUE: "#a855f7", MAIL: "#0ea5e9",
                   **{n: p["color"] for n, p in PACKS.items()}}
-MODELS = {"plan": "claude-opus-5-5", "exec": "claude-sonnet-5-5", "review": "claude-opus-5-5",
+MODELS = {"plan": "claude-opus-5-5", "exec": "claude-sonnet-5-5", "review": "claude-sonnet-5-5",
           "explore": "claude-haiku-5-5", "test": "claude-sonnet-5-5"}  # explore/test = subagent models
 EXPLORER = {"description": "Busca archivos, símbolos y usos en el repo. Úsalo para localizar código antes de editar o planificar.",
             "prompt": "Eres un buscador de código de solo lectura. Localiza lo que te pidan y responde con rutas, líneas y fragmentos mínimos. No propongas cambios.",
