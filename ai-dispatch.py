@@ -43,6 +43,15 @@ MAIN_TEST_CMD = {"repo-n": ["bash", "scripts/test.sh"]}
 NPM_TEST_TIMEOUT = 15 * 60  # repo-v e2e included
 
 
+def note_overrides(note):
+    """Optional per-card lines in the note: "MODEL: <claude model id>", "BUDGET_USD: <n>", "TIMEOUT_MIN: <n>".
+    Lets one card run on another model (e.g. claude-fable-5-2 for a long design/audit pass) without
+    changing the board-wide MODELS. Applies to Claude exec runs only."""
+    g = lambda k: (re.search(rf"(?im)^{k}:\s*(\S+)", note or "") or [None, None])[1]
+    t = g("TIMEOUT_MIN")
+    return g("MODEL"), g("BUDGET_USD"), (int(t) * 60 if t and t.isdigit() else None)
+
+
 def worktree_base(repo, note):
     m = re.search(r"(?im)^WORKTREE_BASE:\s*(\S+)", note or "")
     return m.group(1) if m else BOARD_BASE.get(repo)
@@ -387,17 +396,17 @@ def commit_message(tid, title, attempt):
     return head + text + tail
 
 
-def ask(prompt, perm, model, mode, cwd, agents=None, schema=None, resume=None):
+def ask(prompt, perm, model, mode, cwd, agents=None, schema=None, resume=None, budget=None, timeout=None):
     """Run one claude -p session; returns (ok, text, session_id, structured_output)."""
     extra = [*(["--agents", json.dumps(agents)] if agents else []), *(["--json-schema", json.dumps(schema)] if schema else []),
              *(["--resume", resume] if resume else [])]
     try:
-        p = subprocess.run(["claude", "-p", prompt, "--model", model, "--permission-mode", perm, "--max-budget-usd", BUDGET[mode],
+        p = subprocess.run(["claude", "-p", prompt, "--model", model, "--permission-mode", perm, "--max-budget-usd", budget or BUDGET[mode],
                             "--output-format", "json", *extra,
                             "--allowedTools", *ALLOWED, *(WEB if perm == "plan" else []), "--disallowedTools", *DENIED],
-                           cwd=cwd, env={**os.environ, "PATH": f"{Path.home()}/.local/bin:{HERD_BIN}:{HIMALAYA_DIR}:{os.environ.get('PATH', '')}", "TASKVIEW_NOHOOK": "1", "TASKVIEW_TASK_ID": CURRENT_TASK, "AI_DISPATCH": "1", **RUN_ENV}, capture_output=True, text=True, timeout=TIMEOUT[mode])
+                           cwd=cwd, env={**os.environ, "PATH": f"{Path.home()}/.local/bin:{HERD_BIN}:{HIMALAYA_DIR}:{os.environ.get('PATH', '')}", "TASKVIEW_NOHOOK": "1", "TASKVIEW_TASK_ID": CURRENT_TASK, "AI_DISPATCH": "1", **RUN_ENV}, capture_output=True, text=True, timeout=timeout or TIMEOUT[mode])
     except subprocess.TimeoutExpired:
-        return False, f"Timeout ({TIMEOUT[mode] // 60} min).", None, None
+        return False, f"Timeout ({(timeout or TIMEOUT[mode]) // 60} min).", None, None
     except Exception as e:
         return False, f"Error: {e}", None, None
     try:
@@ -793,9 +802,10 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
                 else:
                     if resume and attempt == 1:  # continue the session that asked, with the user's answer
                         exec_prompt = f"Respuesta del usuario a tu pregunta:\n{resume['answer']}\n\nContinúa con la tarea y termina con el resumen."
-                    ok, out, sid, _ = ask(exec_prompt, "acceptEdits", MODELS["exec"], "exec", wt, agents=EXEC_AGENTS,
-                                          resume=resume["sid"] if resume and attempt == 1 else None)
-                    who = MODELS["exec"]
+                    o_model, o_budget, o_timeout = note_overrides(note)
+                    ok, out, sid, _ = ask(exec_prompt, "acceptEdits", o_model or MODELS["exec"], "exec", wt, agents=EXEC_AGENTS,
+                                          resume=resume["sid"] if resume and attempt == 1 else None, budget=o_budget, timeout=o_timeout)
+                    who = o_model or MODELS["exec"]
                     if (not ok) and is_claude_limit(out):
                         mark_claude_limited(out)
                         sections.append((f"Resultado de la IA · {who}{tag}", False,
