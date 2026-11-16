@@ -127,9 +127,30 @@ def last_user_text(path, max_lines=400):
     return ""
 
 
-def mark_dispatch_cooldown(hours=5):
+def reset_epoch(text):
+    """Parse 'resets 11:10am' (local wall clock) from a limit notice -> unix seconds, or None."""
+    m = re.search(r"resets?\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", text or "", re.I)
+    if not m:
+        return None
+    h, mi, ap = int(m.group(1)), int(m.group(2) or 0), (m.group(3) or "").lower()
+    if ap == "pm" and h < 12:
+        h += 12
+    if ap == "am" and h == 12:
+        h = 0
+    now = time.localtime()
+    cand = time.mktime((now.tm_year, now.tm_mon, now.tm_mday, h, mi, 0, 0, 0, -1))
+    if cand <= time.time() - 300:  # already passed (small grace for clock skew): it is tomorrow
+        cand += 24 * 3600
+    return cand
+
+
+def mark_dispatch_cooldown(text=None, hours=5):
+    """Cooldown until the reset time the notice states; +5h only if it states none.
+    (Before 2026-11-16 it always wrote now+5h, so each limit notice while already limited
+    pushed the dispatcher pause hours past the real reset.)"""
+    until = reset_epoch(text) or time.time() + hours * 3600
     DISPATCH_LIMIT.parent.mkdir(parents=True, exist_ok=True)
-    DISPATCH_LIMIT.write_text(str(time.time() + hours * 3600))
+    DISPATCH_LIMIT.write_text(str(until))
 
 
 def oc_model():
@@ -225,7 +246,7 @@ def main():
             continue
         user_txt = last_user_text(tp)
         handoff = write_handoff(cwd, name, sid, user_txt, snippet or "")
-        mark_dispatch_cooldown()
+        mark_dispatch_cooldown(snippet)
         notify(f"Claude · {name}", f"Límite 5h → OpenCode en {Path(cwd).name}")
         ok = launch_opencode(cwd, handoff, name)
         log(f"handoff name={name} sid={sid} cwd={cwd} launch_ok={ok} handoff={handoff}")
