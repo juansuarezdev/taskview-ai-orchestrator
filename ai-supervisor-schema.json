@@ -1,0 +1,5 @@
+{"type":"object","required":["resumen","acciones","preguntas_usuario","completado"],"properties":{
+"resumen":{"type":"string"},
+"acciones":{"type":"array","items":{"type":"string"}},
+"preguntas_usuario":{"type":"array","items":{"type":"object","required":["tarea","pregunta"],"properties":{"tarea":{"type":"string"},"pregunta":{"type":"string"}}}},
+"completado":{"type":"boolean"}}}

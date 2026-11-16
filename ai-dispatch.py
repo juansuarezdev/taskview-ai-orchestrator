@@ -5,9 +5,11 @@ A task (status Backlog/TODO) runs when it is assigned to an AI user AND carries 
 The assignee decides WHO (ia-users.json): Claude -> claude, OpenCode -> OpenCode (free model, Opus still reviews); both -> Claude.
 The tag decides WHAT:
   ia·plan      -> plans only (read-only), writes the plan into the task note, moves it to Review
-  ia·ejecutar  -> implements it in its own git worktree/branch `ai/t<id>`, never pushes, moves it to Review
+  ia·ejecutar  -> implements it in its own git worktree/branch `ai/t<id>`, moves it to Review; for Board B, Board V (goals 29/30) and Project Board N (repo repo-n), then merges `ai/t<id>` into main and pushes origin if the remote exists (never --force)
 A mode tag with no AI assignee does nothing. Tasks assigned to the user (owner in ia-users.json) are never touched.
 If Claude hits the 5-hour session limit during exec (or a cooldown file says so), the same task continues with OpenCode automatically; Opus review is still deferred on limit.
+If OpenCode fails for quota/rate limit/credits it retries once on the reserve (.opencode-fallback-model = Magpie group/siempre;
+sensitive boards in .opencode-fallback-exclude use .opencode-fallback-model-private = Go only); if that fails too: ia·fallo + 'todo agotado' alert.
 Models: plan = Opus, exec = Sonnet, then an automatic review by Opus (ia·hecho if approved, ia·cambios if not).
 Plan/exec sessions delegate to subagents by model: `explorer` (Haiku, read-only search) and `tester` (Sonnet, runs tests).
 The review answers with a JSON schema (verdict + findings) instead of free text.
@@ -17,7 +19,7 @@ Progress tags: ia·trabajando while running, then ia·plan-listo / ia·hecho / i
 Packs (ia-packs.json): ia·pack·analizar / implementar / barato / silencioso = mode + email in one tag
 (barato is plain ia·ejecutar + mail: the cheap runner comes from assigning OpenCode).
 Tag ia·correo on a task: when its run ends the result is emailed (send-mail) and the tag is removed.
-One task at a time (flock). Run every minute from launchd. `--dry-run` only lists.
+One task at a time (flock). Run every minute from launchd. `--dry-run` only lists. `--integrate-main <repo> <branch>` retries a 29/30 merge into main (same path as after ia·hecho; never --force).
 """
 import base64, fcntl, html, json, os, re, subprocess, sys, time, urllib.request
 from pathlib import Path
@@ -31,9 +33,23 @@ EXTRA_ROOTS = {"repo-r": Path.home() / "Projects/repo-r",  # boards whose folder
                "inbox": CODE,  # loose tasks: read-only analysis across every repo
                "repo-h": Path.home() / "vault/projects/project"}
 WORKTREES = CODE / ".ai-worktrees"
+# Per-board default worktree base while nothing is merged to main (the owner, 15 nov): new ai/t<id> branches start from the
+# board scaffold instead of main. A "WORKTREE_BASE: <branch>" line in the task note still wins (chain phases that way).
+BOARD_BASE = {"repo-b": "ai/t382", "repo-v": "ai/t394"}
+# the owner, 15 nov 2026 20:42 : finished work in projects 29/30 lands on main and origin.
+MERGE_TO_MAIN_REPOS = {"repo-b", "repo-v", "repo-n"}  # repo-n: Project Board N (directiva autónoma de the owner, 15 nov 21:28)
+# Test command run on main before pushing (default `npm test`). repo-n is Swift: scripts/test.sh = swift test of AppCore (+ xcodebuild if present).
+MAIN_TEST_CMD = {"repo-n": ["bash", "scripts/test.sh"]}
+NPM_TEST_TIMEOUT = 15 * 60  # repo-v e2e included
+
+
+def worktree_base(repo, note):
+    m = re.search(r"(?im)^WORKTREE_BASE:\s*(\S+)", note or "")
+    return m.group(1) if m else BOARD_BASE.get(repo)
 LOG = HERE / "logs/ai-dispatch.log"
 REPOS = {"Board M": "repo-m", "Board G": "repo-g", "Board E": "repo-e", "TaskView": "taskview-community", "Board R": "repo-r", "Board GC": "repo-gc", "Board SB": "repo-sb", "local-model": "local-model",
-         "Board A": "repo-a", "Board H": "repo-h", "Inbox": "inbox", "Board C": "repo-c"}
+         "Board A": "repo-a", "Board H": "repo-h", "Inbox": "inbox", "Board C": "repo-c", "Board B": "repo-b", "Board V": "repo-v",
+         "Project N": "repo-n"}
 TRIGGERS = {"ia·plan": "plan", "ia·ejecutar": "exec"}  # mode tag -> mode; the runner comes from the assignee
 # packs (ia-packs.json): one tag = a mode tag + optional mail, so tasks need a single tag; they win over loose triggers
 PACKS = json.loads((HERE / "ia-packs.json").read_text()) if (HERE / "ia-packs.json").exists() else {}
@@ -72,6 +88,7 @@ BUDGET = {"plan": "2", "exec": "5", "review": "2"}
 TIMEOUT = {"plan": 15 * 60, "exec": 40 * 60, "review": 15 * 60}
 _ALLOWED_BASH = ["git status", "git diff", "git log", "git show", "git add", "git commit", "ls", "cat", "head", "tail", "wc", "grep", "find", "which",
                  "npm", "npx", "pnpm", "python3", "node", "send-mail", "composer install", "composer dump-autoload",
+                 "swift build", "swift test", "swift package", "xcodebuild", "xcodegen", "bash scripts/test.sh", "scripts/test.sh", "xcrun simctl list",
                  "php -l", "php -v", "php artisan test", "php vendor/bin/phpunit", "php vendor/bin/pest", "vendor/bin/pint", "php vendor/bin/pint"]
 _DENIED_BASH = ["git push", "rm", "curl", "sudo", "git reset", "git checkout main", "git merge", "git rebase", "git switch main",
                 "git commit --no-verify", "git commit -n"]
@@ -133,11 +150,45 @@ def select(tag_names, assignees, owner):
 
 def main():
     dry = "--dry-run" in sys.argv
+    integrate_args = None
+    if "--integrate-main" in sys.argv:
+        argv = sys.argv[1:]
+        i = argv.index("--integrate-main")
+        rest = [a for a in argv[i + 1:] if not a.startswith("--")]
+        if len(rest) < 2:
+            print("uso: ai-dispatch.py --integrate-main <repo> <rama>", file=sys.stderr)
+            sys.exit(2)
+        integrate_args = (rest[0], rest[1])
     lock = open(HERE / "logs/.ai-dispatch.lock", "w")
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
+        if integrate_args:
+            print("ai-dispatch ocupado (lock); no se reintenta el merge ahora", file=sys.stderr)
+            sys.exit(1)
         return
+    if integrate_args:
+        repo, branch = integrate_args
+        if repo not in MERGE_TO_MAIN_REPOS:
+            print(f"repo {repo} no está en la lista de merge a main ({sorted(MERGE_TO_MAIN_REPOS)})", file=sys.stderr)
+            sys.exit(2)
+        root = EXTRA_ROOTS.get(repo, CODE / repo)
+        ok, detail, _ask = integrate_to_main(root, branch)
+        print(detail)
+        sys.exit(0 if ok else 1)
+    # Pausa: Claude en cooldown y OpenCode/reserva agotados hace <6 h -> no arrancar nada (evita quemar tarjetas a ia·fallo)
+    if not dry and claude_is_limited() and ALERT_FILE.exists():
+        try:
+            last = float(json.loads(ALERT_FILE.read_text()).get("last_event", 0))
+        except Exception:
+            last = 0
+        if time.time() - last < 6 * 3600:
+            mark = HERE / "logs/.pausa-agotado"
+            until = CLAUDE_LIMIT_FILE.read_text().strip()
+            if not mark.exists() or mark.read_text().strip() != until:
+                mark.write_text(until)
+                log(f"pausa: Claude en cooldown y OpenCode agotado; no se arranca nada hasta {time.strftime('%H:%M', time.localtime(float(until)))}")
+            return
     c = dict(l.strip().split("=", 1) for l in (HERE / ".credentials").read_text().splitlines() if "=" in l)
     tok = token(c)
     api = lambda m, p, b=None: call(m, p, b, tok)["response"]
@@ -159,8 +210,13 @@ def main():
         if not any(n in tags for n in (*TRIGGERS, CONTINUE)):
             continue
         st = {s["name"]: s["id"] for s in api("POST", "/module/kanban/fetch-statuses", {"goalId": gid})}
+        if not {"In Progress", "Review"} <= set(st):  # run() moves cards there; without the columns it would crash after the work
+            if dry:
+                print(f"[{g['name']}] sin columnas In Progress/Review: no se arranca nada")
+            continue
         collab = ia_users.collaborators(api, gid)
         names = {v: k for k, v in tags.items()}
+        busy_cache = {}
         for sname in ("TODO", "Backlog", "Review"):
             col = "null" if sname == "Backlog" else st.get(sname)  # Backlog is not a status row: tasks with no status, addressed as `null`
             if col is None:
@@ -173,9 +229,9 @@ def main():
                     who = ia_users.assignee_emails(t, collab)
                     if owner in who or t.get("complete"):  # the user's own task; done tasks may keep a stale trigger tag
                         continue
-                    if sname == "Review":  # only answered questions are picked up from Review
-                        if tags.get(CONTINUE) not in have:
-                            continue
+                    # Review: answered questions (ia·continuar) resume; a mode tag put back on a Review task
+                    # (run() removes it on start, so it was re-queued on purpose, e.g. after ia·fallo) re-runs it below
+                    if sname == "Review" and tags.get(CONTINUE) in have:
                         res, err = parse_resume(t.get("note") or "")
                         if dry:
                             print(f"[{g['name']}] t{t['id']} continuar: {err or res['mode'] + '/' + res['runner']}")
@@ -190,12 +246,48 @@ def main():
                     hit = select({names[i] for i in have if i in names}, who, owner)
                     if hit:
                         trig, mode, runner = hit
+                        wait = base_blocker(api, gid, st, tags, repo, t, busy_cache)
+                        if wait:  # chained phase: its base branch is not ready yet, try the next card
+                            if dry:
+                                print(f"[{g['name']}] t{t['id']} espera: {wait}")
+                            continue
                         if dry:
-                            print(f"[{g['name']}] t{t['id']} {mode}/{runner}: {t['description']}")
+                            print(f"[{g['name']}] t{t['id']} {mode}/{runner} base={worktree_base(repo, t.get('note')) or 'main'}: {t['description']}")
                         else:
                             run(api, g, repo, st, tags, t, mode, trig, runner)
                             return  # one task per tick
                 cur = str(r["nextCursor"]) if r.get("nextCursor") else ""
+
+
+# A card whose base is "ai/t<N>" (BOARD_BASE or the note's WORKTREE_BASE) waits while card N is still pending or
+# running, or while that branch does not exist yet, so chained phases run in order whatever the kanban order is.
+BASE_BUSY_TAGS = ("ia·plan", "ia·ejecutar", CONTINUE, "ia·trabajando", "ia·pregunta", "ia·fallo")
+
+
+def base_blocker(api, gid, st, tags, repo, t, cache):
+    base = worktree_base(repo, t.get("note"))
+    root = EXTRA_ROOTS.get(repo, CODE / repo)
+    if not base or not (root / ".git").exists() or (WORKTREES / f"{repo}-t{t['id']}").exists():
+        return None  # no base pin, not a git board, or the worktree already exists (resume/re-run)
+    if subprocess.run(["git", "-C", str(root), "rev-parse", "--verify", "--quiet", base], capture_output=True).returncode != 0:
+        return f"la rama base {base} aún no existe"
+    m = re.fullmatch(r"ai/t(\d+)", base)
+    if not m:
+        return None
+    if "busy" not in cache:
+        ids = {tags[n] for n in BASE_BUSY_TAGS if n in tags}
+        busy = set()
+        for sname in ("TODO", "Backlog", "In Progress", "Review"):
+            col = "null" if sname == "Backlog" else st.get(sname)
+            cur = "null" if col is not None else ""
+            while cur:
+                r = api("GET", f"/module/kanban/tasks/{gid}/{col}/{cur}")
+                busy |= {x["id"] for x in r["tasks"] if not x.get("complete") and set(x.get("tags") or []) & ids}
+                cur = str(r["nextCursor"]) if r.get("nextCursor") else ""
+        cache["busy"] = busy
+    if int(m.group(1)) in cache["busy"] and int(m.group(1)) != t["id"]:
+        return f"t{m.group(1)} ({base}) sigue pendiente"
+    return None
 
 
 def toggle(api, tags, t, name, on):
@@ -247,6 +339,8 @@ def fmt_review(so):
 
 
 CURRENT_TASK = ""  # id of the task being run; child sessions get it as TASKVIEW_TASK_ID
+CURRENT_GOAL = ""  # board name of the task being run (sensitive boards never use the public reserve)
+OC_LAST = ""  # model the last OpenCode run actually used (primary or reserve)
 RUN_ENV = {}  # extra env for the sessions of the task being run (test DB, PHP memory); set in run()
 HERD_BIN = str(Path.home() / ".config/herd-lite/bin")  # php/composer; launchd PATH does not include it
 TEST_ENV_REPOS = {"repo-c"}  # Laravel+Sail repos: `php artisan test` in the worktree against the Sail Postgres `testing` DB
@@ -316,6 +410,55 @@ def ask(prompt, perm, model, mode, cwd, agents=None, schema=None, resume=None):
 OC_BIN = str(Path.home() / ".opencode/bin/opencode")  # launchd PATH does not include it
 _OC_FILE = HERE / ".opencode-model"  # one line, e.g. opencode/nemotron-3-ultra-free; overrides the default below
 OC_MODEL = _OC_FILE.read_text().strip() if _OC_FILE.exists() else "opencode/deepseek-v4.1-flash-free"  # free model; no paid OpenCode plan
+# Fallback chain (2026-11-15, "IA siempre trabajando"): Claude -> OpenCode (OC_MODEL, OpenCode Go) -> Magpie routing group.
+# When an OpenCode run fails for quota / rate limit / credits, it is retried ONCE with the reserve model instead of ia·fallo.
+# The reserve is a Magpie group (gateway 127.0.0.1:3425, provider `magpie-gw` in ~/.config/opencode/opencode.json):
+#   group/siempre          OpenCode Go models first, then NVIDIA build + Gemini free endpoints once their keys are in Magpie
+#   group/siempre-privado  OpenCode Go only, for boards with sensitive data (free endpoints may train on what they get)
+_OC_FALLBACK_FILE = HERE / ".opencode-fallback-model"  # one line; empty/absent = no reserve retry
+_OC_FALLBACK_PRIVATE_FILE = HERE / ".opencode-fallback-model-private"  # reserve for sensitive boards; empty/absent = no retry there
+_OC_SENSITIVE_FILE = HERE / ".opencode-fallback-exclude"  # board names (fnmatch, case-insensitive, # comments) that never use the public reserve
+_DEFAULT_SENSITIVE = ["SiteApp*", "Board M", "Board V"]
+ALERT_FILE = HERE / "logs/.ia-agotado"  # json of the last "everything exhausted" event
+ALERT_EVERY = 30 * 60  # at most one phone/Mac alert per 30 min
+
+
+def _read_line(f):
+    try:
+        return next((l.strip() for l in f.read_text().splitlines() if l.strip() and not l.strip().startswith("#")), "")
+    except Exception:
+        return ""
+
+
+def _sensitive_patterns():
+    try:
+        pats = [l.strip() for l in _OC_SENSITIVE_FILE.read_text().splitlines() if l.strip() and not l.strip().startswith("#")]
+    except Exception:
+        pats = []
+    return pats or _DEFAULT_SENSITIVE
+
+
+def is_sensitive_board(board):
+    """Unknown board = sensitive (safe default)."""
+    import fnmatch
+    if not board:
+        return True
+    return any(fnmatch.fnmatch(board.lower(), p.lower()) for p in _sensitive_patterns())
+
+
+def fallback_model_for(board):
+    return _read_line(_OC_FALLBACK_PRIVATE_FILE if is_sensitive_board(board) else _OC_FALLBACK_FILE)
+
+
+QUOTA_RE = re.compile(r"\b429\b|\b402\b|too many requests|rate[ _-]?limit|\bcredits?\b|quota|insufficient[ _](?:balance|funds|credit)|"
+                      r"payment required|usage limit|limit (?:reached|exceeded)|resource[ _]exhausted|out of (?:credit|tokens)|billing", re.I)
+
+
+def is_quota_error(ok, diag):
+    """Only failed runs count (a successful run may well talk about credits); a timeout is never quota."""
+    if ok or not diag or diag.lstrip().startswith("Timeout ("):
+        return False
+    return bool(QUOTA_RE.search(diag))
 OC_TIMEOUT = 40 * 60
 OC_PERMISSION = {"bash": {"*": "allow", "git push*": "deny", "git reset*": "deny", "rm *": "deny", "sudo*": "deny", "curl*": "deny", "wget*": "deny",
                           "git merge*": "deny", "git rebase*": "deny", "git checkout main*": "deny", "git switch main*": "deny",
@@ -377,18 +520,72 @@ def opencode_ok_check(ok, out, wt, review_base):
     return ok, out
 
 
+def _oc_once(model, prompt, cwd, perm):
+    """One `opencode run`; returns (ok, text, diag) where diag = tail of stdout+stderr for error detection."""
+    try:
+        p = subprocess.run([OC_BIN, "run", "--model", model, prompt], cwd=cwd, capture_output=True, text=True,
+                           timeout=OC_TIMEOUT, env={**os.environ, "PATH": f"{Path.home()}/.local/bin:{HERD_BIN}:{HIMALAYA_DIR}:{os.environ.get('PATH', '')}", "TASKVIEW_NOHOOK": "1", "TASKVIEW_TASK_ID": CURRENT_TASK, "AI_DISPATCH": "1", **RUN_ENV, "OPENCODE_PERMISSION": json.dumps(perm)})
+        return p.returncode == 0, (p.stdout or p.stderr or "").strip(), f"{(p.stdout or '')[-2000:]}\n{(p.stderr or '')[-2000:]}"
+    except subprocess.TimeoutExpired:
+        return False, f"Timeout ({OC_TIMEOUT // 60} min).", f"Timeout ({OC_TIMEOUT // 60} min)."
+    except Exception as e:
+        return False, f"Error: {e}", f"Error: {e}"
+
+
+def alert_all_exhausted(primary, reserve, diag):
+    """Every engine is out of quota: log + registry + one notification (notify.py: iPhone push + Mac banner), throttled."""
+    flat = " ".join((diag or "").split())[-200:]
+    claude = f"Claude en cooldown hasta {time.strftime('%H:%M', time.localtime(float(CLAUDE_LIMIT_FILE.read_text().strip())))}" if claude_is_limited() else "Claude sin cooldown registrado"
+    log(f"agotado t{CURRENT_TASK} [{CURRENT_GOAL}] opencode={primary} reserva={reserve or '-'} · {claude} · {flat}")
+    try:
+        subprocess.run([str(Path.home() / "vault/bin/vault-log"), "--agent", "dispatcher", "--kind", "error", "--task", f"t{CURRENT_TASK}",
+                        f"IA agotada: {primary} y reserva {reserve or '-'} sin cuota ({CURRENT_GOAL}); {claude}"], check=False, timeout=10)
+    except Exception:
+        pass
+    try:
+        last = json.loads(ALERT_FILE.read_text()).get("ts", 0)
+    except Exception:
+        last = 0
+    now = time.time()
+    try:
+        ALERT_FILE.write_text(json.dumps({"ts": now if now - last >= ALERT_EVERY else last, "last_event": now, "task": CURRENT_TASK, "board": CURRENT_GOAL,
+                                          "primary": primary, "reserve": reserve, "claude": claude, "error": flat}))
+    except Exception:
+        pass
+    if now - last >= ALERT_EVERY:
+        subprocess.run([sys.executable, str(HERE / "notify.py"), "IA sin cuota: todo agotado",
+                        f"OpenCode ({primary}) y la reserva ({reserve or 'ninguna'}) sin cuota. {claude}. t{CURRENT_TASK} queda en ia·fallo: reencola cuando se renueve.",
+                        "5", "--task", str(CURRENT_TASK)])
+
+
 def ask_opencode(prompt, cwd, readonly=False):
     """Run one `opencode run` session with the same guard rails as the claude executor; returns (ok, text).
-    readonly (plan mode): no edits and no shell, only its read/search tools."""
+    readonly (plan mode): no edits and no shell, only its read/search tools.
+    Quota / rate-limit / credit failure on OC_MODEL -> one retry on the reserve model (fallback_model_for the board).
+    OC_LAST tells the caller which model actually answered."""
+    global OC_LAST
     perm = {"bash": "deny", "edit": "deny"} if readonly else OC_PERMISSION
-    try:
-        p = subprocess.run([OC_BIN, "run", "--model", OC_MODEL, prompt], cwd=cwd, capture_output=True, text=True,
-                           timeout=OC_TIMEOUT, env={**os.environ, "PATH": f"{Path.home()}/.local/bin:{HERD_BIN}:{HIMALAYA_DIR}:{os.environ.get('PATH', '')}", "TASKVIEW_NOHOOK": "1", "TASKVIEW_TASK_ID": CURRENT_TASK, "AI_DISPATCH": "1", **RUN_ENV, "OPENCODE_PERMISSION": json.dumps(perm)})
-        return p.returncode == 0, (p.stdout or p.stderr or "").strip()
-    except subprocess.TimeoutExpired:
-        return False, f"Timeout ({OC_TIMEOUT // 60} min)."
-    except Exception as e:
-        return False, f"Error: {e}"
+    OC_LAST = OC_MODEL
+    ok, out, diag = _oc_once(OC_MODEL, prompt, cwd, perm)
+    if not is_quota_error(ok, diag):
+        return ok, out
+    fb = fallback_model_for(CURRENT_GOAL)
+    priv = " (tablero sensible: solo OpenCode Go)" if is_sensitive_board(CURRENT_GOAL) else ""
+    log(f"t{CURRENT_TASK} opencode cuota/límite en {OC_MODEL} → reserva {fb or '(ninguna)'}{priv} [{CURRENT_GOAL}]")
+    if not fb or fb == OC_MODEL:
+        alert_all_exhausted(OC_MODEL, "", diag)
+        return False, f"{out}\n\n(Cuota/límite agotado en {OC_MODEL} y no hay modelo de reserva para este tablero{priv}. Reencola la tarea cuando se renueve.)"
+    OC_LAST = f"{fb} (reserva: cuota agotada en {OC_MODEL})"
+    ok2, out2, diag2 = _oc_once(fb, prompt, cwd, perm)
+    log(f"t{CURRENT_TASK} reserva {fb} ok={ok2}")
+    if ok2:
+        return ok2, f"{out2}\n\n(Hecho con el modelo de reserva {fb}: {OC_MODEL} sin cuota.)"
+    if is_quota_error(ok2, diag2) or "ECONNREFUSED" in diag2 or "Model unavailable" in diag2:
+        alert_all_exhausted(OC_MODEL, fb, diag2)
+        why = "también sin cuota o inaccesible (¿Magpie abierto?)"
+    else:
+        why = "falló por otro motivo (ver salida)"
+    return False, f"{out2}\n\n(Fallo: {OC_MODEL} agotó cuota/crédito y la reserva {fb} {why}. Reencola la tarea cuando se renueve alguna cuota.)"
 
 
 def notify_detail(done_tag, sections):
@@ -406,10 +603,109 @@ def notify_detail(done_tag, sections):
     return flat(rev[-1])[:300] if rev else ""
 
 
+
+def _git(repo, *args, timeout=60):
+    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=timeout)
+
+
+def integrate_to_main(repo_dir, branch, tid=None):
+    """Merge `branch` into main from the principal checkout, test, and push if origin exists.
+
+    Only used for MERGE_TO_MAIN_REPOS (Board B, Board V, repo-n). Never --force. Main must be checked out and clean.
+    On merge conflict: git merge --abort, log, and signal ia·pregunta (ask=True).
+    On npm test failure: reset main to ORIG_HEAD if this call just merged, log, do not push (ask=False).
+    Returns (ok, detail, ask).
+    """
+    repo_dir = Path(repo_dir)
+    label = f"t{tid} " if tid is not None else ""
+    blob = lambda p: ((p.stdout or "") + (p.stderr or "")).strip()
+
+    if not (repo_dir / ".git").exists():
+        msg = f"{label}integrar main: {repo_dir} no es un repo git"
+        log(msg)
+        return False, msg, False
+
+    try:
+        head = _git(repo_dir, "rev-parse", "--abbrev-ref", "HEAD")
+    except Exception as e:
+        msg = f"{label}integrar main: git falló ({e})"
+        log(msg)
+        return False, msg, False
+    if head.returncode != 0 or head.stdout.strip() != "main":
+        msg = f"{label}integrar main: el repo principal no está en main (HEAD={head.stdout.strip()!r}); no se mergea"
+        log(msg)
+        return False, msg, True
+
+    st = _git(repo_dir, "status", "--porcelain")
+    if st.returncode != 0 or st.stdout.strip():
+        msg = f"{label}integrar main: main no está limpio; no se mergea"
+        log(msg)
+        return False, msg, True
+
+    chk = _git(repo_dir, "rev-parse", "--verify", branch)
+    if chk.returncode != 0:
+        msg = f"{label}integrar main: la rama {branch} no existe"
+        log(msg)
+        return False, msg, True
+
+    already = _git(repo_dir, "merge-base", "--is-ancestor", branch, "main").returncode == 0
+    if not already:
+        # --no-edit: fast-forward when possible, otherwise a merge commit with the default message. Never --force.
+        merged = _git(repo_dir, "merge", "--no-edit", branch, timeout=120)
+        if merged.returncode != 0:
+            _git(repo_dir, "merge", "--abort")
+            msg = f"{label}integrar main: conflicto al mergear {branch} en main; merge abortado. {blob(merged)[-2000:]}"
+            log(msg)
+            return False, msg, True
+    else:
+        log(f"{label}integrar main: {branch} ya está contenida en main")
+
+    env = {k: v for k, v in os.environ.items() if k not in ("APP_DB", "APP_MODEL")}
+    test_cmd = MAIN_TEST_CMD.get(repo_dir.name, ["npm", "test"])
+    tname = " ".join(test_cmd)
+    try:
+        test = subprocess.run(
+            test_cmd, cwd=str(repo_dir), capture_output=True, text=True,
+            timeout=NPM_TEST_TIMEOUT, env=env,
+        )
+    except subprocess.TimeoutExpired:
+        if not already:
+            _git(repo_dir, "reset", "--hard", "ORIG_HEAD")
+        msg = f"{label}integrar main: {tname} excedió {NPM_TEST_TIMEOUT}s; no se hace push"
+        log(msg)
+        return False, msg, False
+    if test.returncode != 0:
+        if not already:
+            _git(repo_dir, "reset", "--hard", "ORIG_HEAD")
+        msg = f"{label}integrar main: {tname} falló; no se hace push. {blob(test)[-2000:]}"
+        log(msg)
+        return False, msg, False
+
+    rem = _git(repo_dir, "remote", "get-url", "origin")
+    if rem.returncode != 0 or not rem.stdout.strip():
+        tip = _git(repo_dir, "rev-parse", "--short", "HEAD").stdout.strip()
+        msg = f"{label}integrar main: {branch} en main ({tip}), tests ok, no hay remoto origin (sin push)"
+        log(msg)
+        return True, msg, False
+
+    # never --force / --force-with-lease
+    push = _git(repo_dir, "push", "origin", "main", timeout=180)
+    if push.returncode != 0:
+        tip = _git(repo_dir, "rev-parse", "--short", "HEAD").stdout.strip()
+        msg = f"{label}integrar main: tests ok, main en {tip}, git push origin main falló (sin --force). {blob(push)[-2000:]}"
+        log(msg)
+        return False, msg, True
+    tip = _git(repo_dir, "rev-parse", "--short", "HEAD").stdout.strip()
+    msg = f"{label}integrar main: {branch} en main ({tip}) y push a origin/main"
+    log(msg)
+    return True, msg, False
+
+
 def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
     tid = t["id"]
-    global CURRENT_TASK, RUN_ENV
+    global CURRENT_TASK, CURRENT_GOAL, RUN_ENV
     CURRENT_TASK = str(tid)
+    CURRENT_GOAL = goal.get("name", "")
     if mode == "exec" and runner == "claude" and claude_is_limited():
         log(f"t{tid} claude en cooldown → runner=opencode")
         runner = "opencode"
@@ -427,8 +723,7 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
     base = EXTRA_ROOTS.get(repo, CODE / repo)
     in_place = not (base / ".git").exists()  # no repo: no worktree, read-only analysis only
     branch, wt = f"ai/t{tid}", WORKTREES / f"{repo}-t{tid}"
-    mbase0 = re.search(r"(?im)^WORKTREE_BASE:\s*(\S+)", note or "")
-    review_base = (mbase0.group(1) if mbase0 else "main")
+    review_base = worktree_base(repo, note) or "main"
     ctx = board_context(api, goal, st, t)
     RUN_ENV = repo_test_env(base) if repo in TEST_ENV_REPOS else {}
     ctx += TEST_HINT if RUN_ENV else ""
@@ -444,9 +739,9 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
         elif not wt.exists():
             WORKTREES.mkdir(exist_ok=True)
             # Optional pin in the task note: "WORKTREE_BASE: <branch>" (e.g. ai/t271). Else main/HEAD.
-            mbase = re.search(r"(?im)^WORKTREE_BASE:\s*(\S+)", note or "")
-            if mbase:
-                start = mbase.group(1)
+            pinned = worktree_base(repo, note)
+            if pinned:
+                start = pinned
                 chk = subprocess.run(["git", "-C", str(base), "rev-parse", "--verify", start], capture_output=True)
                 if chk.returncode != 0:
                     raise RuntimeError(f"WORKTREE_BASE {start} no existe en {base}")
@@ -475,7 +770,7 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
                           f"NO modifiques nada. {DELEGATE.replace(' y la ejecución de tests/build en el subagente `tester`', '')}{ASK_RULE}Responde en español, conciso, en markdown.")
             if runner == "opencode":  # no session resume and no subagents: plain read-only run
                 ok, out = ask_opencode(prompt.replace(DELEGATE.replace(' y la ejecución de tests/build en el subagente `tester`', ''), "").replace(ASK_RULE, ""), wt, readonly=True)
-                who = f"OpenCode · {OC_MODEL}"
+                who = f"OpenCode · {OC_LAST}"
                 sections.append((f"Plan de la IA · {who}", ok, out))
             else:
                 ok, out, sid, _ = ask(prompt, "plan", MODELS["plan"], "plan", wt, agents=PLAN_AGENTS, resume=resume and resume["sid"])
@@ -493,7 +788,7 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
                 sid = None
                 if runner == "opencode":
                     ok, out = ask_opencode(exec_prompt, wt)
-                    who = f"OpenCode · {OC_MODEL}"
+                    who = f"OpenCode · {OC_LAST}"
                     ok, out = opencode_ok_check(ok, out, wt, review_base)
                 else:
                     if resume and attempt == 1:  # continue the session that asked, with the user's answer
@@ -507,7 +802,7 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
                                          (out or "") + "\n(Límite Claude 5h: paso automático a OpenCode.)"))
                         log(f"t{tid} claude limit mid-exec → opencode")
                         ok, out = ask_opencode(exec_prompt, wt)
-                        who = f"OpenCode · {OC_MODEL} (fallback límite Claude)"
+                        who = f"OpenCode · {OC_LAST} (fallback límite Claude)"
                         runner = "opencode"
                         sid = None
                         ok, out = opencode_ok_check(ok, out, wt, review_base)
@@ -557,8 +852,14 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
         subprocess.run([sys.executable, str(HERE / "notify.py"), ttl, f"Hecho en {branch}; revisión Opus aplazada por el límite de 5h. Reencola tras el reset.", "3", "--task", str(tid)])
         return
     done_tag = "ia·fallo" if not ok else ("ia·pregunta" if asked else "ia·plan-listo" if mode == "plan" else ("ia·hecho" if verdict_ok else "ia·cambios"))
+    ask_merge = False
+    if done_tag == "ia·hecho" and mode == "exec" and not in_place and repo in MERGE_TO_MAIN_REPOS:
+        _mok, mdet, ask_merge = integrate_to_main(base, branch, tid)
+        body += f"\n\n--- Integración en main ({stamp()}){'' if _mok else ' — FALLÓ'} ---\n{mdet}"
     toggle(api, tags, t, "ia·trabajando", False)
     toggle(api, tags, t, done_tag, True)
+    if ask_merge:
+        toggle(api, tags, t, "ia·pregunta", True)
     api("PATCH", "/module/tasks", {"id": tid, "note": f"{note}{body}".strip(), "statusId": st["Review"]})
     log(f"end t{tid} ok={ok} {done_tag} runner={runner} model={who.split(' · ')[-1].replace(' ', '_')} secs={int(time.time() - t_run)}")
     msg = {"ia·fallo": "Revisa la nota de la tarea", "ia·plan-listo": "Plan listo para revisar", "ia·hecho": "Implementada y aprobada por la revisión",
