@@ -56,6 +56,10 @@ def last_limit_signal(path, max_lines=120):
             continue
         # Limit notices are written by Claude Code itself (assistant message with apiError, or system).
         # User prompts / api-request blobs may quote an old limit text (e.g. a TaskView note): ignore them.
+        # An assistant message only counts when Claude Code flagged it as an API error: a normal
+        # assistant reply can quote the limit text (it did on 2026-11-16 09:18 explaining this bug).
+        if o.get("type") == "assistant" and not (o.get("apiError") or o.get("isApiErrorMessage")):
+            continue
         if o.get("type") not in ("assistant", "system"):
             continue
         parts = [str(o.get("content") or "")]
