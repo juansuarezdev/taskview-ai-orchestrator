@@ -21,7 +21,7 @@ Packs (ia-packs.json): ia·pack·analizar / implementar / barato / silencioso = 
 Tag ia·correo on a task: when its run ends the result is emailed (send-mail) and the tag is removed.
 One task at a time (flock). Run every minute from launchd. `--dry-run` only lists. `--integrate-main <repo> <branch>` retries a 29/30 merge into main (same path as after ia·hecho; never --force).
 """
-import base64, fcntl, html, json, os, re, subprocess, sys, tempfile, time, urllib.request
+import base64, datetime, fcntl, html, json, os, re, subprocess, sys, tempfile, time, urllib.request
 from pathlib import Path
 
 import ia_users
@@ -37,7 +37,7 @@ WORKTREES = CODE / ".ai-worktrees"
 # board scaffold instead of main. A "WORKTREE_BASE: <branch>" line in the task note still wins (chain phases that way).
 BOARD_BASE = {"repo-b": "ai/t382", "repo-v": "ai/t394"}
 # the owner, 15 nov 2026 20:42 : finished work in projects 29/30 lands on main and origin.
-MERGE_TO_MAIN_REPOS = {"repo-b", "repo-v", "repo-n"}  # repo-n: Project Board N (directiva autónoma de the owner, 15 nov 21:28)
+MERGE_TO_MAIN_REPOS = {"repo-b", "repo-v", "repo-n", "repo-s"}  # repo-n: Project Board N (directiva autónoma de the owner, 15 nov 21:28)
 # Test command run on main before pushing (default `npm test`). repo-n is Swift: scripts/test.sh = swift test of AppCore (+ xcodebuild if present).
 MAIN_TEST_CMD = {"repo-n": ["bash", "scripts/test.sh"]}
 NPM_TEST_TIMEOUT = 15 * 60  # repo-v e2e included
@@ -58,7 +58,7 @@ def worktree_base(repo, note):
 LOG = HERE / "logs/ai-dispatch.log"
 REPOS = {"Board M": "repo-m", "Board G": "repo-g", "Board E": "repo-e", "TaskView": "taskview-community", "Board R": "repo-r", "Board GC": "repo-gc", "Board SB": "repo-sb", "local-model": "local-model",
          "Board A": "repo-a", "Board H": "repo-h", "Inbox": "inbox", "Board C": "repo-c", "Board B": "repo-b", "Board V": "repo-v",
-         "Project N": "repo-n"}
+         "Project N": "repo-n", "Board S": "repo-s"}
 TRIGGERS = {"ia·plan": "plan", "ia·ejecutar": "exec"}  # mode tag -> mode; the runner comes from the assignee
 # packs (ia-packs.json): one tag = a mode tag + optional mail, so tasks need a single tag; they win over loose triggers
 PACKS = json.loads((HERE / "ia-packs.json").read_text()) if (HERE / "ia-packs.json").exists() else {}
@@ -200,13 +200,11 @@ def main():
         ok, detail, _ask = integrate_to_main(root, branch)
         print(detail)
         sys.exit(0 if ok else 1)
-    # Pausa: Claude en cooldown y OpenCode/reserva agotados hace <6 h -> no arrancar nada (evita quemar tarjetas a ia·fallo)
-    if not dry and claude_is_limited() and ALERT_FILE.exists():
-        try:
-            last = float(json.loads(ALERT_FILE.read_text()).get("last_event", 0))
-        except Exception:
-            last = 0
-        if time.time() - last < 6 * 3600:
+    # Pausa: Claude en cooldown y OpenCode/reserva agotados (opencode_exhausted) -> no arrancar nada (evita quemar tarjetas a ia·fallo)
+    if not dry:
+        paid_release_check()
+    if not dry and claude_is_limited() and ALERT_FILE.exists() and not _read_line(_OC_FREE_FILE):
+        if opencode_exhausted():
             mark = HERE / "logs/.pausa-agotado"
             until = CLAUDE_LIMIT_FILE.read_text().strip()
             if not mark.exists() or mark.read_text().strip() != until:
@@ -273,8 +271,10 @@ def main():
                             toggle(api, tags, t, CONTINUE, False)
                             log(f"continue t{t['id']} skipped: {err}")
                             subprocess.run([sys.executable, str(HERE / "notify.py"), f"IA: {t['description'][:60]}", f"No puedo continuar: {err}", "3", "--task", str(t["id"])])
-                        elif res["runner"] == "claude" and claude_paced():
+                        elif res["runner"] == "claude" and (claude_paced() or claude_reserved(g["name"])):
                             pass  # held: a Claude session cannot resume elsewhere; it continues when the window allows
+                        elif res["runner"] == "opencode" and not opencode_usable(g["name"]):
+                            pass  # held until Go is back (sensitive board, no free model)
                         else:
                             mark_goal(gid)
                             run(api, g, repo, st, tags, t, res["mode"], CONTINUE, res["runner"], res)
@@ -291,11 +291,13 @@ def main():
                         if dry:
                             print(f"[{g['name']}] t{t['id']} {mode}/{runner} base={worktree_base(repo, t.get('note')) or 'main'}: {t['description']}")
                         else:
-                            if runner == "claude" and claude_paced():
-                                if mode != "exec" or opencode_exhausted():
+                            if runner == "claude" and (claude_paced() or claude_reserved(g["name"])):
+                                if mode != "exec" or not opencode_usable(g["name"]):
                                     continue  # held; cards of other runners further down may still start
                                 log(f"t{t['id']} pacing → runner=opencode")
                                 runner = "opencode"
+                            elif runner == "opencode" and not opencode_usable(g["name"]):
+                                continue  # Go out and no free model here (sensitive board): wait instead of ia·fallo
                             mark_goal(gid)
                             run(api, g, repo, st, tags, t, mode, trig, runner)
                             return  # one task per tick
@@ -504,6 +506,59 @@ def fallback_model_for(board):
     return _read_line(_OC_FALLBACK_PRIVATE_FILE if is_sensitive_board(board) else _OC_FALLBACK_FILE)
 
 
+# Last resort (2026-11-17, the owner): free OpenCode Zen models only once the paid ones (Claude, OpenCode Go) are out, and
+# never on sensitive boards (free endpoints may train on what they get). One alert when going free, one when Go is back.
+_OC_FREE_FILE = HERE / ".opencode-free-model"  # one line, e.g. opencode/deepseek-v4.1-flash-free; empty/absent = never free
+FREE_STATE = HERE / "logs/.modo-gratis.json"  # {"since", "model"} while the free model stands in for Go
+
+
+def free_model_for(board):
+    return "" if is_sensitive_board(board) else _read_line(_OC_FREE_FILE)
+
+
+def opencode_usable(board, now=None):
+    """An OpenCode run on this board can do something now: Go has quota, or the board may use the free model."""
+    return not opencode_exhausted(now) or bool(free_model_for(board))
+
+
+def notify(title, body, prio="3"):
+    subprocess.run([sys.executable, str(HERE / "notify.py"), title, body, prio], check=False)
+
+
+def go_back_at():
+    """Readable time when Go is expected back (from Magpie's date), or ''."""
+    try:
+        err = str(json.loads(ALERT_FILE.read_text()).get("error", ""))
+        m = re.search(r"not asked again before (\w{3} \d{1,2} \d{2}:\d{2}) UTC\+0", err)
+        if m:
+            when = datetime.datetime.strptime(f"{time.gmtime().tm_year} {m.group(1)}", "%Y %b %d %H:%M").replace(tzinfo=datetime.timezone.utc)
+            return time.strftime("%d/%m %H:%M", time.localtime(when.timestamp()))
+    except Exception:
+        pass
+    return ""
+
+
+def enter_free_mode(model, now=None):
+    """First run on the free model since Go ran out: record it and tell the owner once."""
+    if FREE_STATE.exists():
+        return
+    FREE_STATE.parent.mkdir(exist_ok=True)
+    FREE_STATE.write_text(json.dumps({"since": now or time.time(), "model": model}))
+    back = go_back_at()
+    log(f"modo gratis: {model} en lugar de OpenCode Go{' hasta ' + back if back else ''}")
+    notify("IA en modo gratis", f"OpenCode Go sin cuota{' hasta ' + back if back else ''}: las tarjetas de OpenCode usan {model} "
+           "(tableros sensibles esperan). Te aviso cuando vuelva Go.")
+
+
+def paid_release_check(now=None):
+    """Once Go has quota again (its date passed), leave free mode and tell the owner."""
+    if not FREE_STATE.exists() or opencode_exhausted(now):
+        return
+    FREE_STATE.unlink(missing_ok=True)
+    log("modo gratis: OpenCode Go vuelve a tener cuota")
+    notify("OpenCode Go disponible", "Ya hay cuota de OpenCode Go: las tarjetas vuelven al modelo de pago. Reencola las que quedaron en ia·fallo.", "4")
+
+
 QUOTA_RE = re.compile(r"\b429\b|\b402\b|too many requests|rate[ _-]?limit|\bcredits?\b|quota|insufficient[ _](?:balance|funds|credit)|"
                       r"payment required|usage limit|limit (?:reached|exceeded)|resource[ _]exhausted|out of (?:credit|tokens)|billing", re.I)
 
@@ -575,6 +630,31 @@ PACE_HARD = 90  # % from which no Claude run starts, whatever the line says
 USAGE_STALE = 15 * 60  # older figures are only a lower bound
 USAGE_ALERTS = (70, 90)  # one phone alert per window at each level
 PROBE_MODEL = "claude-haiku-4-5"
+# The weekly window (seven_day) is shared with the owner's own sessions: same straight line over 7 days, so the dispatcher never
+# spends the week ahead of time. A wider slack than the 5h line because the weekly figure moves slowly.
+WEEK_HOURS = 168
+WEEK_SLACK = 15
+WEEK_HARD = 90
+# Usage reservations set by the owner: windows (local time) in which Claude only runs for the boards in "solo" (empty = for none),
+# so the 5h window reaches the reserved work untouched. [{"desde": "2026-11-19 00:00", "hasta": "2026-11-19 15:00", "solo": []}]
+RESERVE_FILE = HERE / ".reserva-claude.json"
+
+
+def claude_reserved(board=None, now=None):
+    """Reason string when a reservation keeps Claude away from this board now, else ""."""
+    now = now or time.time()
+    try:
+        windows = json.loads(RESERVE_FILE.read_text())
+    except Exception:
+        return ""
+    for w in windows if isinstance(windows, list) else []:
+        try:
+            a, b = (time.mktime(time.strptime(w[k], "%Y-%m-%d %H:%M")) for k in ("desde", "hasta"))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if a <= now < b and board not in (w.get("solo") or []):
+            return w.get("motivo") or f"reserva hasta {w['hasta']}"
+    return ""
 
 
 def parse_usage(stdout):
@@ -640,12 +720,29 @@ def usage_now(now=None):
     return s
 
 
+def week_pace(s, now=None):
+    """(hold, used %, allowed %) for the weekly window, or None when the snapshot has no live weekly figure."""
+    now = now or time.time()
+    try:
+        used, resets = float(s["week_pct"]), float(s["week_resets"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if now >= resets:
+        return None
+    elapsed_h = max(0.0, WEEK_HOURS - (resets - now) / 3600)
+    allowed = min(100.0, elapsed_h / WEEK_HOURS * 100 + WEEK_SLACK)
+    return used > allowed or used >= WEEK_HARD, used, allowed
+
+
 def pace(s, now=None):
-    """(hold, used %, minutes into the window, allowed %): allowed = min(100, elapsed/240*100 + slack); hold above it or from PACE_HARD."""
+    """(hold, used %, minutes into the window, allowed %) of the 5h line: allowed = min(100, elapsed/240*100 + slack); hold above it
+    or from PACE_HARD. The weekly line (week_pace) also holds; the figures returned stay the 5h ones."""
     now = now or time.time()
     elapsed = max(0.0, 300 - (s["five_resets"] - now) / 60)
     allowed = min(100.0, elapsed / (PACE_HOURS * 60) * 100 + PACE_SLACK)
-    return s["five_pct"] > allowed or s["five_pct"] >= PACE_HARD, s["five_pct"], elapsed, allowed
+    w = week_pace(s, now)
+    hold = s["five_pct"] > allowed or s["five_pct"] >= PACE_HARD or bool(w and w[0])
+    return hold, s["five_pct"], elapsed, allowed
 
 
 def probe_usage():
@@ -686,16 +783,34 @@ def claude_paced():
         last = 0
     if time.time() - last >= 600:
         mark.write_text(str(time.time()))
-        log(f"pacing: {d[1]:.0f}% used, {d[2]:.0f} min into window, allowed {d[3]:.0f}%, holding")
+        w = week_pace(usage_now() or {})
+        week = f"; week {w[1]:.0f}% (allowed {w[2]:.0f}%{', over' if w[0] else ''})" if w else ""
+        log(f"pacing: {d[1]:.0f}% used, {d[2]:.0f} min into window, allowed {d[3]:.0f}%{week}, holding")
     return True
 
 
-def opencode_exhausted():
-    """OpenCode and its reserve ran out of quota less than 6 h ago (same test as the pause in main)."""
+def opencode_exhausted(now=None):
+    """OpenCode and its reserve are out of quota (same test as the pause in main): until the date Magpie gives
+    ("not asked again before Nov 25 02:26 UTC+0"), 24 h after a monthly-limit error, else 6 h after the last event.
+    Without this a monthly Go limit burned one queued card to ia·fallo every 6 h."""
+    now = now or time.time()
     try:
-        return time.time() - float(json.loads(ALERT_FILE.read_text()).get("last_event", 0)) < 6 * 3600
+        a = json.loads(ALERT_FILE.read_text())
+        last, err = float(a.get("last_event", 0)), str(a.get("error", ""))
     except Exception:
         return False
+    m = re.search(r"not asked again before (\w{3} \d{1,2} \d{2}:\d{2}) UTC\+0", err)
+    if m:
+        try:
+            when = datetime.datetime.strptime(f"{time.gmtime(last).tm_year} {m.group(1)}", "%Y %b %d %H:%M")
+            until = when.replace(tzinfo=datetime.timezone.utc).timestamp()
+            if until < last:  # the date is in the next year
+                until = when.replace(year=when.year + 1, tzinfo=datetime.timezone.utc).timestamp()
+            return now < until
+        except ValueError:
+            pass
+    hours = 24 if "monthly" in err.lower() else 6
+    return now - last < hours * 3600
 
 
 def usage_alerts(s):
@@ -731,11 +846,14 @@ def usage_report():
     hold, used, elapsed, allowed = pace(s)
     week = f"{s['week_pct']:.0f}%" + (f" (resets {time.strftime('%a %H:%M', time.localtime(float(s['week_resets'])))})" if s.get("week_resets") else "") if s.get("week_pct") is not None else "?"
     age = (time.time() - s["ts"]) / 60
-    why = f"hard stop from {PACE_HARD}%" if used >= PACE_HARD else f"{used:.0f}% > allowed {allowed:.0f}%"
+    w = week_pace(s)
+    why = (f"hard stop from {PACE_HARD}%" if used >= PACE_HARD else f"{used:.0f}% > allowed {allowed:.0f}%" if used > allowed
+           else f"week {w[1]:.0f}% > allowed {w[2]:.0f}% (hard stop {WEEK_HARD}%)" if w and w[0] else "?")
     return (f"5h window: {used:.0f}% used, resets {time.strftime('%H:%M', time.localtime(s['five_resets']))} ({elapsed:.0f} min into window)\n"
             f"7d window: {week}\n"
             f"snapshot: {age:.0f} min old, source {s.get('source', '?')}{' (stale: lower bound, re-probed before a start)' if age * 60 >= USAGE_STALE else ''}\n"
             f"pacing: allowed {allowed:.0f}% now (elapsed/{PACE_HOURS * 60}*100 + {PACE_SLACK}, hard stop {PACE_HARD}%)\n"
+            f"week pacing: {'allowed ' + format(w[2], '.0f') + '% now' if w else 'no live weekly figure'} (elapsed/{WEEK_HOURS}h*100 + {WEEK_SLACK}, hard stop {WEEK_HARD}%)\n"
             f"decision: {'HOLD Claude (' + why + '); exec cards go to OpenCode if available' if hold else 'OK to start Claude'}\n{tail}")
 
 
@@ -795,6 +913,9 @@ def ask_opencode(prompt, cwd, readonly=False):
     OC_LAST tells the caller which model actually answered."""
     global OC_LAST
     perm = {"bash": "deny", "edit": "deny"} if readonly else OC_PERMISSION
+    free = free_model_for(CURRENT_GOAL)
+    if opencode_exhausted() and free:  # Go known to be out: straight to the free model
+        return ask_free(free, prompt, cwd, perm, "OpenCode Go sin cuota")
     OC_LAST = OC_MODEL
     ok, out, diag = _oc_once(OC_MODEL, prompt, cwd, perm)
     if not is_quota_error(ok, diag):
@@ -812,10 +933,21 @@ def ask_opencode(prompt, cwd, readonly=False):
         return ok2, f"{out2}\n\n(Hecho con el modelo de reserva {fb}: {OC_MODEL} sin cuota.)"
     if is_quota_error(ok2, diag2) or "ECONNREFUSED" in diag2 or "Model unavailable" in diag2:
         alert_all_exhausted(OC_MODEL, fb, diag2)
+        if free:
+            return ask_free(free, prompt, cwd, perm, f"{OC_MODEL} y la reserva {fb} sin cuota")
         why = "también sin cuota o inaccesible (¿Magpie abierto?)"
     else:
         why = "falló por otro motivo (ver salida)"
     return False, f"{out2}\n\n(Fallo: {OC_MODEL} agotó cuota/crédito y la reserva {fb} {why}. Reencola la tarea cuando se renueve alguna cuota.)"
+
+
+def ask_free(model, prompt, cwd, perm, why):
+    global OC_LAST
+    enter_free_mode(model)
+    OC_LAST = f"{model} (gratis: {why})"
+    ok, out, _ = _oc_once(model, prompt, cwd, perm)
+    log(f"t{CURRENT_TASK} gratis {model} ok={ok}")
+    return ok, f"{out}\n\n(Hecho con el modelo gratis {model}: {why}.)" if ok else f"{out}\n\n(Falló también el modelo gratis {model}: {why}.)"
 
 
 def notify_detail(done_tag, sections):
@@ -984,7 +1116,7 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
             log(f"t{tid} prepare_worktree ok={pok} {pdet[:120]}")
             if not pok:
                 sections.append(("Preparación del worktree", False, pdet + "\nLos tests no podrán ejecutarse hasta resolverlo."))
-        if not resume and len(re.sub(r"<[^>]+>", " ", note).strip()) < CONTEXT_MIN:  # thin task: a cheap model gathers context first, fewer questions later
+        if not resume and len(re.sub(r"<[^>]+>", " ", note).strip()) < CONTEXT_MIN and not claude_reserved(goal["name"]):  # thin task: a cheap model gathers context first, fewer questions later
             cok, cout, _, _ = ask(f"{ctx}\nTarea de TaskView #{tid}: {t['description']}\n\nLa tarea tiene poca descripción. Explora el repo (solo lectura) y escribe, en español y en "
                                   "máximo 8 líneas, el contexto útil para quien la haga: archivos y módulos relevantes, estado actual y los supuestos razonables que tomarías. "
                                   "No hagas preguntas ni modifiques nada.", "plan", MODELS["explore"], "plan", wt)
@@ -1050,10 +1182,15 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
                 if not ok:
                     break
                 s_use = usage_now()
-                if s_use and s_use["five_pct"] >= PACE_HARD:  # hard stop: no new Claude run this late in the window
+                w_use = week_pace(s_use) if s_use else None
+                week_hard = bool(w_use and w_use[1] >= WEEK_HARD)
+                reserved = claude_reserved(goal["name"])
+                if reserved or (s_use and (s_use["five_pct"] >= PACE_HARD or week_hard)):  # hard stop: no new Claude run this late in the window
+                    which = (f"reservada ({reserved})" if reserved else f"semanal de Claude al {w_use[1]:.0f}%" if week_hard
+                             else f"de 5h de Claude al {s_use['five_pct']:.0f}%")
                     sections.append((f"Revisión · {MODELS['review']}{tag}", False,
-                                     f"(Revisión aplazada: ventana de 5h de Claude al {s_use['five_pct']:.0f}%; worktree conservado. Reencolar tras el reset.)"))
-                    log(f"t{tid} pacing: {s_use['five_pct']:.0f}% used, review deferred")
+                                     f"(Revisión aplazada: ventana {which}; worktree conservado. Reencolar tras el reset.)"))
+                    log(f"t{tid} pacing: {which}, review deferred")
                     review_deferred = True
                     break
                 rok, rout, _, so = ask(f"{ctx}\n{task_txt}\nOtra IA implementó esta tarea en la rama {branch} (worktree actual). Revisa con `git diff {review_base}...HEAD` y `git log {review_base}..HEAD` (base de la tarea, no necesariamente main): "
@@ -1111,7 +1248,7 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
 
 def mail_result(api, tags, t, msg, body, done_tag):
     """Email the outcome of one run (3 tries, the network can blip); the tag is removed only when the mail went out."""
-    text = f"{t['description']}\n{msg} ({done_tag})\n{body[-8000:]}"
+    text = f"{t['description']}\n{msg} ({done_tag})\n{body[-40000:]}"
     cmd = [str(Path.home() / ".local/bin/send-mail"), "--to", MAIL_TO, "--subject", f"IA: {t['description'][:70]} — {msg}", "--text", text]
     env = {**os.environ, "PATH": f"{HIMALAYA_DIR}:{os.environ.get('PATH', '')}"}
     for attempt, wait in enumerate((0, 30, 90), 1):

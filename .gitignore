@@ -9,3 +9,4 @@ __pycache__/
 vapid/
 *.bak-*
 grokbot/
+.reserva-claude.json
