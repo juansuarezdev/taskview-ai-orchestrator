@@ -6,8 +6,10 @@
 - Latest backup less than half the size of the previous one (data loss?): alert.
 - Once a week: restore the latest backup into a throwaway Postgres (restore-test.sh) and alert if it does not restore.
 - Anything still wrong afterwards: macOS notification.
+- Board C in production (https://app.example.com), from outside only (no SSH): /up and /login
+  must answer 200 and the TLS certificate must have at least 14 days left; separate alert.
 """
-import subprocess, sys, time, urllib.error, urllib.request
+import socket, ssl, subprocess, sys, time, urllib.error, urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).parent
@@ -45,9 +47,48 @@ def restore_due():
     return not marker.exists() or time.time() - marker.stat().st_mtime > 7 * 86400
 
 
-def notify(msg):
-    sh("osascript", "-e", f'display notification "{msg}" with title "TaskView"')
-    sh(sys.executable, str(HERE / "notify.py"), "TaskView", msg, "4")
+def notify(msg, title="TaskView"):
+    sh("osascript", "-e", f'display notification "{msg}" with title "{title}"')
+    sh(sys.executable, str(HERE / "notify.py"), title, msg, "4")
+
+
+SITE_HOST = "app.example.com"
+TLS_MIN_DAYS = 14
+
+
+def http_status(url):
+    try:
+        return urllib.request.urlopen(url, timeout=10).status
+    except urllib.error.HTTPError as e:
+        return e.code
+    except Exception:
+        return None
+
+
+def tls_days_left(host):
+    """Whole days until the certificate expires, or None when the TLS handshake fails."""
+    try:
+        with socket.create_connection((host, 443), timeout=10) as raw:
+            with ssl.create_default_context().wrap_socket(raw, server_hostname=host) as tls:
+                not_after = ssl.cert_time_to_seconds(tls.getpeercert()["notAfter"])
+        return int((not_after - time.time()) // 86400)
+    except Exception:
+        return None
+
+
+def siteapp_problems(status=http_status, days_left=tls_days_left):
+    """What is wrong with SiteApp in production, seen from outside. Empty list = healthy."""
+    problems = []
+    for path in ("/up", "/login"):
+        code = status(f"https://{SITE_HOST}{path}")
+        if code != 200:
+            problems.append(f"{path} responde {code or 'nada'}")
+    days = days_left(SITE_HOST)
+    if days is None:
+        problems.append("el certificado TLS no valida")
+    elif days < TLS_MIN_DAYS:
+        problems.append(f"al certificado TLS le quedan {days} días")
+    return problems
 
 
 def main():
@@ -67,10 +108,12 @@ def main():
             (HERE / "logs/.restore-test").touch()
         else:
             problems.append("el backup no se restaura bien (restore-test.sh)")
+    siteapp = siteapp_problems()
+    if siteapp:
+        notify("Producción: " + " y ".join(siteapp), "SiteApp")
     if problems:
         notify("Fallo: " + " y ".join(problems))
-        return 1
-    return 0
+    return 1 if problems or siteapp else 0
 
 
 if __name__ == "__main__":
