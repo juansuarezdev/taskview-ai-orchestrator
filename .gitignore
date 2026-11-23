@@ -1,15 +1,24 @@
-.env.*
-logs/
+# Secrets and local credentials (never commit; templates live in examples/)
 .credentials*
-.jwt
-cj
-__pycache__/
-.opencode-model
 .api-token
+.jwt
+.env
+.env.*
+!.env.example
+cj
 vapid/
-*.bak-*
-grokbot/
-.reserva-claude.json
+
+# Local state written by the orchestrator
+logs/
 orq-config.json
 orq-config.json.tmp
 web-tasks.txt
+.reserva-claude.json
+.opencode-model
+
+# Leftovers
+*.bak-*
+__pycache__/
+grokbot/
+mac-notifier/*.app/
+.DS_Store

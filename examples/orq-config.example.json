@@ -1,0 +1,32 @@
+{
+  "tick_secs": 60,
+  "runner_both": "claude",
+  "default_runner": null,
+  "handoff_to_opencode": true,
+  "pace_hours": 4,
+  "pace_slack": 10,
+  "pace_hard": 90,
+  "week_slack": 15,
+  "week_hard": 90,
+  "usage_alerts": [
+    70,
+    90
+  ],
+  "max_rounds": 3,
+  "budget_usd": {
+    "plan": 2,
+    "exec": 5,
+    "review": 2
+  },
+  "merge_to_main_repos": [
+    "repo-b",
+    "repo-n",
+    "repo-s",
+    "repo-v"
+  ],
+  "disabled_boards": [],
+  "priority_projects": [
+    32
+  ],
+  "priority_tasks": []
+}

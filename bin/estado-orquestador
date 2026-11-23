@@ -1,0 +1,11 @@
+#!/bin/zsh
+# Estado del orquestador TaskView (solo lectura). ORQ_DIR = carpeta del orquestador (por defecto, la del repo de este script).
+SH=${ORQ_DIR:-${0:A:h:h}}
+echo "== Límites y decisión del despachador"
+(cd $SH && timeout 30 python3 ai-dispatch.py --usage 2>&1 | grep -E '^(5h|7d|decision|claude)')
+echo "\n== Últimos eventos (start/end/integrar)"
+grep -E ' (start|end|integrar|ERROR|413)' $SH/logs/ai-dispatch.log | tail -${1:-12}
+echo "\n== Sesiones de IA vivas"
+ps -eo pid,etime,command | grep -E '(^| )(claude|opencode)( |$).*(-p|run)' | grep -v grep | awk '{print $1, $2}' | head
+echo "\n== launchd"
+launchctl list | grep -E 'taskview-(ai|supervisor)'
