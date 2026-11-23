@@ -1,6 +1,7 @@
 """Usage pacing of ai-dispatch.py: snapshot parsing, the pacing line and the statusline merge. Run: python3 selfhost/tests/test_dispatch_pacing.py"""
 import importlib.util, json, os, sys, tempfile, time
 from pathlib import Path
+import os as _os, tempfile as _tf; _os.environ.setdefault("ORQ_CONFIG_FILE", str(Path(_tf.mkdtemp()) / "orq-config.json"))  # never the real file
 
 HERE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(HERE))

@@ -1,6 +1,7 @@
 """Selection rule of ai-dispatch.py: tags say what, assignees say who. Run: python3 selfhost/tests/test_dispatch_select.py"""
 import importlib.util, sys
 from pathlib import Path
+import os as _os, tempfile as _tf; _os.environ.setdefault("ORQ_CONFIG_FILE", str(Path(_tf.mkdtemp()) / "orq-config.json"))  # never the real file
 
 HERE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(HERE))
