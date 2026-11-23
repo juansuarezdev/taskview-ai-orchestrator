@@ -1,61 +1,94 @@
 <style>
-  body{padding:3.5vh 4vw;box-sizing:border-box;display:flex;flex-direction:column;gap:2.5vh;font-size:6.2vh}
-  .hd{display:flex;align-items:center;gap:2vw}
-  .hd b{font-size:7vh;letter-spacing:.02em}
-  .dot{width:2.6vh;height:2.6vh;border-radius:50%;background:#4cc584}
-  .dot.run{background:#6b9cf5;animation:p 1.6s infinite}.dot.pause{background:#e9a84a}.dot.off{background:#6b7280}
+  /* PhoneBox widget language (www/style.css): w-title, w-sub, chip-btn, tokens --text/--muted/--dim, accent #2dd4bf. Sizes follow the iframe. */
+  :root{--text:#eef2f6;--muted:#8a94a3;--dim:#5b6472;--acc:#2dd4bf;--ok:#22c55e;--warn:#f59e0b;--err:#ef4444;--up:#60a5fa}
+  body{padding:5.5vh 4.2vw 5vh;box-sizing:border-box;display:flex;flex-direction:column;gap:3.4vh;font-size:7.4vh;font-variant-numeric:tabular-nums}
+  .hd{display:flex;align-items:baseline;gap:2.4vw;white-space:nowrap;overflow:hidden}
+  .tt{font-size:6.4vh;letter-spacing:.12em;text-transform:uppercase;font-weight:700;color:var(--acc)}
+  .sub{margin-left:auto;font-size:6.4vh;color:var(--dim);display:flex;align-items:center;gap:1.6vw;overflow:hidden;text-overflow:ellipsis}
+  .dot{width:3vh;height:3vh;border-radius:50%;background:var(--ok);flex:none}
+  .dot.run{background:var(--up);box-shadow:0 0 6px var(--up);animation:p 1.6s infinite}.dot.pause{background:var(--warn)}.dot.off{background:var(--dim)}
   @keyframes p{50%{opacity:.3}}
-  .st{color:#8a94a3;margin-left:auto;font-size:5.4vh}
-  .task{font-size:6.6vh;font-weight:600;line-height:1.2;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
-  .task small{display:block;color:#8a94a3;font-weight:400;font-size:5vh;margin-top:.6vh}
-  .nums{display:grid;grid-template-columns:repeat(3,1fr);gap:2vw;margin-top:auto}
-  .n{background:rgba(255,255,255,.06);border-radius:2vh;padding:1.6vh 2vw}
-  .n b{display:block;font-size:10vh;font-weight:700;line-height:1.1}
-  .n span{color:#8a94a3;font-size:4.6vh}
-  .n.warn b{color:#e9a84a}
-  .bar{height:1.3vh;background:rgba(255,255,255,.1);border-radius:1vh;margin-top:.8vh;overflow:hidden}
-  .bar i{display:block;height:100%;background:#6b9cf5}
-  button{font:inherit;font-weight:600;font-size:5.6vh;border:0;border-radius:2vh;padding:2.2vh 3vw;background:rgba(255,255,255,.1);color:#eef2f6}
-  button.ask{background:#e9a84a;color:#1a1205}
-  button.res{background:#4cc584;color:#06210f}
+  .task{font-size:8.4vh;font-weight:600;line-height:1.22;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;color:var(--text)}
+  .task small{color:var(--muted);font-weight:400}
+  .task.one{-webkit-line-clamp:1}
+  .ask{font-size:6.8vh;line-height:1.25;color:var(--warn);overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+  .ask b{font-weight:700}
+  .nums{display:flex;gap:4vw;align-items:flex-end;margin-top:auto}
+  .n b{display:block;font-size:12vh;font-weight:300;line-height:1}
+  .n span{color:var(--muted);font-size:5.8vh}
+  .n.warn b{color:var(--warn)}
+  .u{flex:1;min-width:0}
+  .u .l{display:flex;justify-content:space-between;color:var(--muted);font-size:5.8vh}
+  .u .l b{color:var(--text);font-weight:600}
+  .bar{position:relative;height:1.8vh;background:rgba(255,255,255,.08);border-radius:1vh;margin:1vh 0 1.6vh}
+  .bar i{display:block;height:100%;border-radius:1vh;background:var(--acc)}
+  .bar s{position:absolute;top:-1vh;width:2px;height:3.8vh;background:var(--text);opacity:.45}
+  .acts{display:flex;gap:2vw}
+  button{flex:1;min-width:0;font:inherit;font-size:6.4vh;font-weight:600;border:0;border-radius:3.4vh;padding:3.2vh 1.5vw;background:rgba(255,255,255,.08);color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  button:active{background:var(--acc);color:#06080b}
+  button.go{background:rgba(45,212,191,.16);color:var(--acc)}
+  button.arm{background:var(--warn);color:#1a1205}
+  button.sent{opacity:.55}
 </style>
-<div class="hd"><span class="dot off" id="dot"></span><b>Orquestador</b><span class="st" id="st">sin datos</span></div>
+<div class="hd"><span class="tt">Orquestador</span><span class="sub"><span id="st">sin datos</span><span class="dot off" id="dot"></span></span></div>
 <div class="task" id="task">Esperando al panel…</div>
+<div class="ask" id="ask" hidden></div>
 <div class="nums">
-  <div class="n" id="nq"><b id="q">–</b><span>en cola</span></div>
+  <div class="n" id="nq"><b id="q">–</b><span>cola</span></div>
   <div class="n" id="np"><b id="p">–</b><span>preguntas</span></div>
-  <div class="n"><b id="u" style="font-size:7.4vh;padding-top:1.3vh">–</b><span id="us">5 h / semana</span><div class="bar"><i id="ub" style="width:0"></i></div></div>
+  <div class="u"><div class="l"><span>5 h <b id="h5">–</b></span><span>semana <b id="d7">–</b></span></div>
+    <div class="bar"><i id="hb" style="width:0"></i><s id="hm" hidden></s></div></div>
 </div>
-<button id="btn">Pausar</button>
+<div class="acts" id="acts"></div>
 <script>
-  var S = null, armed = 0;
+  // Data: PhoneBox push "orquestador" (orq-panel.py every 30 s). Actions: PhoneBox shortcuts (orq-pausar, orq-reanudar, orq-responder,
+  // orq-web, orq-relanzar) that run orq-panel.py on the Mac. First tap arms, a second tap within 4 s sends.
+  var S = null, armed = null, timer = 0, sent = {};
   function $(i){return document.getElementById(i)}
+  function acts(o){
+    var a = [o.paused ? ['orq-reanudar', 'Reanudar', 'go'] : ['orq-pausar', 'Pausar', '']];
+    if (o.question) { a.push(['orq-responder', 'Decide tú', 'go']); if (!o.question.web) a.push(['orq-web', 'Aprobar web', '']); }
+    else if (o.relaunch) a.push(['orq-relanzar', 'Relanzar t' + o.relaunch.id, '']);
+    return a;
+  }
   function render(){
     var o = S && S.orq; if (!o) return;
     var stale = Date.now()/1000 - o.at > 180;
     $('dot').className = 'dot ' + (stale ? 'off' : o.paused ? 'pause' : o.running ? 'run' : '');
     $('st').textContent = stale ? 'sin datos' : o.paused ? 'en pausa' : o.running ? Math.floor(o.running.elapsed/60) + ' min' : 'libre';
-    $('task').innerHTML = '';
-    if (o.running) { $('task').textContent = 't' + o.running.id + ' · ' + o.running.title; var s = document.createElement('small'); s.textContent = o.running.board; $('task').appendChild(s); }
-    else $('task').textContent = o.paused ? 'En pausa: no arranca nada nuevo' : 'Sin tarea en curso';
+    var t = $('task'); t.textContent = '';
+    if (o.running) { t.textContent = 't' + o.running.id + ' ' + o.running.title + ' '; var s = document.createElement('small'); s.textContent = '· ' + o.running.board; t.appendChild(s); }
+    else t.textContent = o.paused ? 'En pausa: no arranca nada nuevo' : 'Sin tarea en curso';
+    var q = o.question, k = $('ask');
+    t.className = 'task' + (q ? ' one' : '');
+    k.hidden = !q;
+    if (q) { k.textContent = ''; var b = document.createElement('b'); b.textContent = 't' + q.id + ' pregunta: '; k.appendChild(b); k.appendChild(document.createTextNode(q.text || q.title)); }
     $('q').textContent = o.queue; $('p').textContent = o.questions;
     $('np').className = 'n' + (o.questions ? ' warn' : '');
-    $('u').textContent = (o.h5 == null ? '?' : o.h5) + '% · ' + (o.d7 == null ? '?' : o.d7) + '%';
-    $('ub').style.width = Math.min(100, o.h5 || 0) + '%';
-    $('ub').style.background = o.h5 >= 90 ? '#f07068' : o.h5 >= 70 ? '#e9a84a' : '#6b9cf5';
-    if (!armed) { $('btn').textContent = o.paused ? 'Reanudar' : 'Pausar'; $('btn').className = o.paused ? 'res' : ''; }
+    $('h5').textContent = (o.h5 == null ? '?' : o.h5) + '%'; $('d7').textContent = (o.d7 == null ? '?' : o.d7) + '%';
+    $('hb').style.width = Math.min(100, o.h5 || 0) + '%';
+    $('hb').style.background = o.h5 >= 90 ? 'var(--err)' : o.h5 >= 70 ? 'var(--warn)' : 'var(--acc)';
+    if (o.h5_allowed != null) { $('hm').hidden = false; $('hm').style.left = Math.min(100, o.h5_allowed) + '%'; }
+    if (armed) return;  // keep the armed button while waiting for the second tap
+    var box = $('acts'); box.textContent = '';
+    acts(o).forEach(function(x){
+      var btn = document.createElement('button'); btn.textContent = sent[x[0]] && Date.now() - sent[x[0]] < 8000 ? 'Enviado' : x[1];
+      btn.className = x[2] + (sent[x[0]] && Date.now() - sent[x[0]] < 8000 ? ' sent' : ''); btn.dataset.id = x[0]; btn.dataset.label = x[1];
+      box.appendChild(btn);
+    });
   }
-  phonebox.on('push', function(p){ var it = p && p.orquestador; if (it) { S = it.data || it; render(); } });
-  $('btn').onclick = function(){
-    if (!S || !S.orq) return;
-    var paused = S.orq.paused;
-    if (!armed) {  // first tap arms, second tap within 4 s confirms
-      armed = setTimeout(function(){ armed = 0; render(); }, 4000);
-      $('btn').textContent = paused ? '¿Reanudar? Toca otra vez' : '¿Pausar? Toca otra vez'; $('btn').className = 'ask';
+  $('acts').addEventListener('click', function(e){
+    var b = e.target.closest('button'); if (!b || !S) return;
+    var id = b.dataset.id;
+    if (armed !== id) {  // first tap arms this button
+      armed = id; clearTimeout(timer); render();
+      [].forEach.call($('acts').children, function(x){ x.className = x === b ? 'arm' : ''; x.textContent = x === b ? '¿Seguro? Toca' : x.dataset.label; });
+      timer = setTimeout(function(){ armed = null; render(); }, 4000);
       return;
     }
-    clearTimeout(armed); armed = 0;
-    phonebox.run(paused ? 'orq-reanudar' : 'orq-pausar');
-    $('btn').textContent = 'Enviado…';
-  };
+    clearTimeout(timer); armed = null; sent[id] = Date.now();
+    phonebox.run(id);
+    render();
+  });
+  phonebox.on('push', function(p){ var it = p && p.orquestador; if (it) { S = it.data || it; render(); } });
 </script>

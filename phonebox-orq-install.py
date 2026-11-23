@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Adds the small orchestrator card to PhoneBox (idempotent): a Custom HTML widget on the "Sessions" page
-(GitHub widget shrinks to the top half) and two shortcuts, orq-pausar / orq-reanudar, that the card runs.
+(GitHub widget shrinks to the top half) and the shortcuts the card runs: orq-pausar / orq-reanudar, orq-responder
+(answers the newest question with "decide tú"), orq-web (grants the web to it and resumes it) and orq-relanzar (re-queues
+the newest ia·fallo card).
 Backs up config.json first. Undo: copy the backup back, or run with --remove."""
 import json
 import shutil
@@ -17,13 +19,19 @@ SHORTCUTS = [
      "args": f"{PANEL} --pause --phonebox", "toggle": False},
     {"id": "orq-reanudar", "label": "Reanudar orquestador", "icon": "▶️", "color": "#16834a", "cmd": "/usr/bin/python3",
      "args": f"{PANEL} --resume --phonebox", "toggle": False},
+    {"id": "orq-responder", "label": "Orquestador: decide tú", "icon": "💬", "color": "#2dd4bf", "cmd": "/usr/bin/python3",
+     "args": f"{PANEL} --answer-latest --phonebox", "toggle": False},
+    {"id": "orq-web", "label": "Orquestador: aprobar web", "icon": "🌐", "color": "#60a5fa", "cmd": "/usr/bin/python3",
+     "args": f"{PANEL} --web-latest --phonebox", "toggle": False},
+    {"id": "orq-relanzar", "label": "Orquestador: relanzar", "icon": "🔁", "color": "#f59e0b", "cmd": "/usr/bin/python3",
+     "args": f"{PANEL} --relaunch-latest --phonebox", "toggle": False},
 ]
 
 
 def main():
     remove = "--remove" in sys.argv
     c = json.loads(CFG.read_text())
-    backup = CFG.with_name(f"config.json.bak-{time.strftime('%F')}-orq")
+    backup = CFG.with_name(f"config.json.bak-{time.strftime('%F')}-orq-v2")
     if not backup.exists():
         shutil.copy2(CFG, backup)
     page = next(p for p in c["pages"] if p["id"] == PAGE)

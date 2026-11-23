@@ -5,119 +5,273 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Orquestador IA</title>
 <style>
-:root{
-  --bg:#f4f5f7;--card:#ffffff;--ink:#14171c;--muted:#5d6673;--line:#e3e6eb;--soft:#eef0f3;
-  --accent:#2f6fde;--ok:#16834a;--ok-bg:#e3f4ea;--warn:#a3620a;--warn-bg:#fcf0d9;--bad:#c2372f;--bad-bg:#fbe5e3;
-  --info-bg:#e6eefc;--shadow:0 1px 2px rgba(20,23,28,.06),0 2px 8px rgba(20,23,28,.04);
-  --mono:ui-monospace,"SF Mono",Menlo,monospace;
+/* Lenguaje visual de PhoneBox (agent/PhoneBox.Agent/settings.html): mismos tokens, radios, botones, switch, seg y modal. */
+:root {
+  --bg: #f4f5f7; --panel: #ffffff; --panel-2: #f8f9fb; --line: #e3e6eb; --text: #14171c; --muted: #6b7280;
+  --accent: #0f9d8a; --accent-ink: #ffffff; --danger: #dc2626; --ok: #16a34a; --warn: #d97706; --info: #2563eb;
+  --shadow: 0 1px 2px rgba(0,0,0,.05), 0 4px 16px rgba(0,0,0,.04);
+  --ease: cubic-bezier(.2,.8,.2,1);
+  color-scheme: light;
 }
-@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
-  --bg:#0f1115;--card:#171a20;--ink:#e8ebf0;--muted:#8d96a3;--line:#262b33;--soft:#1e222a;
-  --accent:#6b9cf5;--ok:#4cc584;--ok-bg:#15291f;--warn:#e9a84a;--warn-bg:#2c2312;--bad:#f07068;--bad-bg:#2e1717;--info-bg:#18233a;--shadow:none}}
-:root[data-theme="dark"]{
-  --bg:#0f1115;--card:#171a20;--ink:#e8ebf0;--muted:#8d96a3;--line:#262b33;--soft:#1e222a;
-  --accent:#6b9cf5;--ok:#4cc584;--ok-bg:#15291f;--warn:#e9a84a;--warn-bg:#2c2312;--bad:#f07068;--bad-bg:#2e1717;--info-bg:#18233a;--shadow:none}
-*{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
-header{position:sticky;top:0;z-index:5;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
-.bar{max-width:1240px;margin:0 auto;padding:12px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
-h1{font-size:18px;margin:0;font-weight:650;letter-spacing:-.01em}
-.sp{flex:1}
-.pill{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;font-size:13px;font-weight:600;background:var(--soft);color:var(--muted);white-space:nowrap}
-.pill i{width:8px;height:8px;border-radius:50%;background:currentColor}
-.pill.ok{background:var(--ok-bg);color:var(--ok)}.pill.warn{background:var(--warn-bg);color:var(--warn)}.pill.bad{background:var(--bad-bg);color:var(--bad)}.pill.info{background:var(--info-bg);color:var(--accent)}
-.pill.run i{animation:pulse 1.6s infinite}
-@keyframes pulse{50%{opacity:.25}}
-button{font:inherit;font-size:14px;font-weight:600;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink);padding:7px 13px;cursor:pointer}
-button:hover{border-color:var(--muted)}
-button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
-button.danger{background:var(--bad);border-color:var(--bad);color:#fff}
-button.ghost{background:transparent;border-color:transparent;color:var(--muted);padding:6px 8px}
-button.small{font-size:13px;padding:4px 10px}
-button:disabled{opacity:.5;cursor:default}
-main{max-width:1240px;margin:0 auto;padding:16px;display:grid;grid-template-columns:repeat(12,1fr);gap:16px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);padding:16px;min-width:0}
-.card h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:0 0 12px;font-weight:650;display:flex;align-items:center;gap:8px}
-.card h2 .n{background:var(--soft);color:var(--ink);border-radius:999px;padding:0 8px;font-size:12px;letter-spacing:0}
-.c4{grid-column:span 4}.c5{grid-column:span 5}.c6{grid-column:span 6}.c7{grid-column:span 7}.c8{grid-column:span 8}.c12{grid-column:span 12}
-@media (max-width:980px){.c4,.c5,.c6,.c7,.c8{grid-column:span 12}}
-.big{font-size:22px;font-weight:650;letter-spacing:-.01em;margin:2px 0 4px}
-.muted{color:var(--muted)}.mono{font-family:var(--mono);font-size:13px}
-.row{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
-.meter{margin:10px 0 14px}
-.meter .top{display:flex;justify-content:space-between;font-size:14px;margin-bottom:6px}
-.meter .top b{font-size:20px}
-.track{position:relative;height:10px;background:var(--soft);border-radius:999px;overflow:visible}
-.fill{height:100%;border-radius:999px;background:var(--accent);transition:width .4s}
-.fill.warn{background:var(--warn)}.fill.bad{background:var(--bad)}
-.mark{position:absolute;top:-4px;width:2px;height:18px;background:var(--ink);opacity:.55;border-radius:1px}
-.list{list-style:none;margin:0;padding:0}
-.list li{padding:10px 0;border-top:1px solid var(--line);display:flex;gap:10px;align-items:flex-start}
-.list li:first-child{border-top:0;padding-top:2px}
-.list .main{flex:1;min-width:0}
-.title{font-weight:600}
-.tid{font-family:var(--mono);font-size:12px;color:var(--muted);background:var(--soft);border-radius:6px;padding:1px 6px;white-space:nowrap}
-.tag{font-size:12px;border-radius:6px;padding:1px 7px;background:var(--soft);color:var(--muted);white-space:nowrap}
-.tag.ok{background:var(--ok-bg);color:var(--ok)}.tag.warn{background:var(--warn-bg);color:var(--warn)}.tag.bad{background:var(--bad-bg);color:var(--bad)}.tag.info{background:var(--info-bg);color:var(--accent)}
-table{width:100%;border-collapse:collapse;font-size:14px}
-th{text-align:left;font-size:12px;color:var(--muted);font-weight:600;padding:6px 8px;border-bottom:1px solid var(--line)}
-td{padding:8px;border-bottom:1px solid var(--line);vertical-align:top}
-tr:last-child td{border-bottom:0}
-td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
-.tw{overflow-x:auto}
-textarea,input[type=text],input[type=number]{font:inherit;width:100%;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);padding:8px 10px}
-textarea{min-height:64px;resize:vertical}
-.q{background:var(--soft);border-radius:8px;padding:10px 12px;margin:8px 0;white-space:pre-wrap;font-size:14px}
-.empty{color:var(--muted);font-size:14px;padding:6px 0}
-.grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px 16px}
-details summary{cursor:pointer;color:var(--muted);font-size:14px}
-pre{white-space:pre-wrap;background:var(--soft);border-radius:8px;padding:12px;font:12.5px/1.5 var(--mono);margin:10px 0 0;max-height:420px;overflow:auto}
-.dlg{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center;z-index:20;padding:16px}
-.dlg.on{display:flex}
-.dlg .box{background:var(--card);border:1px solid var(--line);border-radius:14px;max-width:440px;width:100%;padding:20px}
-.dlg h3{margin:0 0 8px;font-size:17px}
-.dlg p{margin:0 0 16px;color:var(--muted)}
-.dlg .act{display:flex;justify-content:flex-end;gap:8px}
-.toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:9px 16px;border-radius:10px;font-size:14px;opacity:0;transition:opacity .2s;pointer-events:none;z-index:30}
-.toast.on{opacity:1}
-.foot{grid-column:span 12;color:var(--muted);font-size:12px;text-align:center;padding:4px 0 24px}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --bg: #0c0e12; --panel: #14171d; --panel-2: #1a1e25; --line: #262b34; --text: #e8ecf1; --muted: #8a94a3;
+    --accent: #2dd4bf; --accent-ink: #062b26; --danger: #ef4444; --ok: #22c55e; --warn: #f59e0b; --info: #60a5fa; --shadow: none; color-scheme: dark; }
+}
+:root[data-theme="dark"] { --bg: #0c0e12; --panel: #14171d; --panel-2: #1a1e25; --line: #262b34; --text: #e8ecf1; --muted: #8a94a3;
+  --accent: #2dd4bf; --accent-ink: #062b26; --danger: #ef4444; --ok: #22c55e; --warn: #f59e0b; --info: #60a5fa; --shadow: none; color-scheme: dark; }
+* { box-sizing: border-box; }
+html { overflow-x: hidden; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 "Segoe UI", system-ui, sans-serif; font-variant-numeric: tabular-nums; }
+button, input, select, textarea { font: inherit; color: inherit; }
+[hidden] { display: none !important; }
+header {
+  position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 14px;
+  padding: 12px 24px; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--line);
+}
+.logo { width: 28px; height: 28px; border-radius: 8px; background: var(--accent); color: var(--accent-ink); display: grid; place-items: center; flex: none; }
+.logo svg { width: 16px; height: 16px; }
+header h1 { font-size: 17px; margin: 0; font-weight: 650; }
+header .ver { color: var(--muted); font-size: 12px; }
+.pill { font-size: 12px; padding: 4px 10px; border-radius: 99px; background: var(--panel-2); border: 1px solid var(--line); display: inline-flex; gap: 6px; align-items: center; white-space: nowrap; }
+.pill i { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.pill.on i { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+.pill.run i { background: var(--info); box-shadow: 0 0 6px var(--info); animation: pulse 1.6s infinite; }
+.pill.warn i { background: var(--warn); box-shadow: 0 0 6px var(--warn); }
+.pill.err i { background: var(--danger); }
+@keyframes pulse { 50% { opacity: .3; } }
+.spacer { flex: 1; }
+.btn { border: 1px solid var(--line); background: var(--panel); padding: 7px 14px; border-radius: 9px; cursor: pointer; white-space: nowrap; }
+.btn:hover { border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 600; }
+.btn.warn { background: var(--warn); color: #1a1205; border-color: transparent; font-weight: 600; }
+.btn:disabled { opacity: .45; cursor: default; }
+.btn.danger { color: var(--danger); }
+.btn.sm { padding: 4px 9px; font-size: 12.5px; border-radius: 7px; }
+.icon-btn { border: 1px solid var(--line); background: var(--panel); width: 30px; height: 30px; border-radius: 8px; cursor: pointer; display: grid; place-items: center; }
+.icon-btn svg { width: 15px; height: 15px; }
+
+.layout { display: grid; grid-template-columns: 170px minmax(0, 1fr); gap: 24px; max-width: 1400px; margin: 0 auto; padding: 24px; }
+nav { position: sticky; top: 76px; align-self: start; display: flex; flex-direction: column; gap: 2px; }
+nav a { padding: 8px 12px; border-radius: 8px; color: var(--text); text-decoration: none; display: flex; align-items: center; gap: 8px; }
+nav a:hover { background: var(--panel-2); }
+nav a.on { background: var(--panel); box-shadow: var(--shadow); font-weight: 600; border: 1px solid var(--line); }
+nav a .n { margin-inline-start: auto; font-size: 11px; color: var(--muted); background: var(--panel-2); border-radius: 6px; padding: 0 6px; font-weight: 600; }
+nav a .n.hot { background: color-mix(in srgb, var(--warn) 20%, transparent); color: var(--warn); }
+main { min-width: 0; }
+section { display: none; }
+section.on { display: block; animation: pb-in .18s var(--ease) backwards; }
+@keyframes pb-in { from { opacity: 0; transform: translateY(4px); } }
+h2 { font-size: 20px; margin: 0 0 4px; }
+.lead { color: var(--muted); margin: 0 0 18px; max-width: 760px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); padding: 16px 18px; margin-bottom: 14px; min-width: 0; }
+.card h3 { margin: 0 0 12px; font-size: 15px; display: flex; align-items: center; gap: 8px; }
+.card h3 .sub { margin-inline-start: auto; font-size: 12px; font-weight: 400; color: var(--muted); }
+.cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 14px; align-items: start; }
+.row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.muted { color: var(--muted); }
+.mono { font: 12px/1.5 ui-monospace, "SF Mono", Consolas, monospace; }
+.big { font-size: 20px; font-weight: 650; margin: 4px 0; line-height: 1.25; }
+.opt-section { margin: 18px 0 10px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 700; }
+.opt-section:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+.field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 12px; min-width: 0; }
+.field label { font-size: 12.5px; color: var(--muted); font-weight: 600; display: flex; gap: 6px; align-items: center; }
+.field .hint { font-size: 12px; color: var(--muted); }
+.field.err input { border-color: var(--danger); }
+.field .msg { font-size: 12px; color: var(--danger); }
+.chg { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); display: inline-block; }
+input[type=text], input[type=number], select, textarea {
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; outline: none; min-width: 0; width: 100%;
+}
+input:focus, select:focus, textarea:focus { border-color: var(--accent); }
+textarea { resize: vertical; min-height: 60px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
+.grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0 12px; }
+.check { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; user-select: none; margin: 0 14px 6px 0; }
+.check input { accent-color: var(--accent); width: 16px; height: 16px; }
+.checks { display: flex; flex-wrap: wrap; }
+
+/* switch */
+.switch { position: relative; width: 40px; height: 22px; flex: 0 0 40px; display: inline-block; }
+.switch input { opacity: 0; width: 0; height: 0; position: absolute; }
+.switch span { position: absolute; inset: 0; background: var(--line); border-radius: 99px; transition: .2s; cursor: pointer; }
+.switch span::after { content: ""; position: absolute; left: 3px; top: 3px; width: 16px; height: 16px; background: #fff; border-radius: 50%; transition: .2s; box-shadow: 0 1px 3px rgba(0,0,0,.3); }
+.switch input:checked + span { background: var(--accent); }
+.switch input:checked + span::after { left: 21px; }
+.switch input:disabled + span { opacity: .4; cursor: default; }
+.sw-row { display: flex; align-items: center; gap: 12px; padding: 9px 0; border-top: 1px solid var(--line); }
+.sw-row:first-of-type { border-top: 0; }
+.sw-row .lbl { flex: 1; min-width: 0; }
+.sw-row .lbl small { display: block; color: var(--muted); font-size: 12px; }
+
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
+.seg button { border: 0; background: var(--panel); padding: 6px 13px; cursor: pointer; font-size: 13px; color: var(--text); }
+.seg button + button { border-inline-start: 1px solid var(--line); }
+.seg button.on { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+
+/* status tiles, PhoneBox widget feel */
+.tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
+.tile { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); padding: 12px 14px; min-width: 0; }
+.tile .k { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; font-weight: 700; color: var(--muted); }
+.tile .v { font-size: 26px; font-weight: 650; line-height: 1.2; margin-top: 2px; }
+.tile .v small { font-size: 13px; color: var(--muted); font-weight: 400; }
+.tile.warn .v { color: var(--warn); }
+.meter { margin: 6px 0 14px; }
+.meter .top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+.meter .top b { font-size: 18px; }
+.track { position: relative; height: 8px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 99px; }
+.fill { height: 100%; border-radius: 99px; background: var(--accent); transition: width .4s var(--ease); }
+.fill.warn { background: var(--warn); } .fill.bad { background: var(--danger); }
+.mark { position: absolute; top: -5px; width: 2px; height: 16px; background: var(--text); opacity: .5; border-radius: 1px; }
+
+.items { list-style: none; margin: 0; padding: 0; }
+.items li { padding: 10px 0; border-top: 1px solid var(--line); display: flex; gap: 10px; align-items: flex-start; }
+.items li:first-child { border-top: 0; padding-top: 2px; }
+.items .main { flex: 1; min-width: 0; }
+.items .title { font-weight: 600; overflow-wrap: anywhere; }
+.tid { font: 600 11.5px/1.6 ui-monospace, "SF Mono", Consolas, monospace; color: var(--muted); background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 0 6px; white-space: nowrap; }
+.tag { font-size: 11.5px; border-radius: 6px; padding: 1px 7px; background: var(--panel-2); color: var(--muted); border: 1px solid var(--line); white-space: nowrap; }
+.tag.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); background: color-mix(in srgb, var(--ok) 10%, transparent); }
+.tag.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); background: color-mix(in srgb, var(--warn) 10%, transparent); }
+.tag.bad { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, transparent); background: color-mix(in srgb, var(--danger) 10%, transparent); }
+.tag.info { color: var(--info); border-color: color-mix(in srgb, var(--info) 40%, transparent); background: color-mix(in srgb, var(--info) 10%, transparent); }
+.tag.acc { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.q { background: var(--panel-2); border: 1px solid var(--line); border-radius: 9px; padding: 9px 12px; margin: 8px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.empty { color: var(--muted); padding: 6px 0; }
+table.items-t { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.items-t th { text-align: start; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 700; padding: 6px 8px; }
+table.items-t td { border-top: 1px solid var(--line); padding: 7px 8px; vertical-align: middle; }
+td.num { text-align: end; white-space: nowrap; }
+.tw { overflow-x: auto; }
+details summary { cursor: pointer; font-size: 13px; color: var(--muted); font-weight: 600; }
+pre { white-space: pre-wrap; background: var(--panel-2); border: 1px solid var(--line); border-radius: 9px; padding: 10px 12px; font: 12px/1.5 ui-monospace, "SF Mono", Consolas, monospace; margin: 10px 0 0; max-height: 420px; overflow: auto; }
+.quick { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+.qa { display: flex; flex-direction: column; gap: 6px; padding: 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel-2); min-width: 0; }
+.qa b { font-size: 13px; }
+.qa small { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.qa .btn { align-self: flex-start; margin-top: auto; }
+.prio { display: flex; flex-direction: column; gap: 6px; }
+.prio-row { display: flex; align-items: center; gap: 8px; padding: 7px 10px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 9px; }
+.prio-row .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prio-row .pos { width: 18px; color: var(--muted); font-size: 12px; text-align: end; }
+.savebar { position: sticky; bottom: 0; display: flex; align-items: center; gap: 10px; padding: 12px 0; background: color-mix(in srgb, var(--bg) 90%, transparent); backdrop-filter: blur(6px); border-top: 1px solid var(--line); margin-top: 6px; }
+.dirty { display: none; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); }
+.is-dirty .dirty { display: inline-flex; }
+.dirty i { width: 8px; height: 8px; border-radius: 50%; background: var(--warn); }
+
+.modal { position: fixed; inset: 0; z-index: 40; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; padding: 24px; }
+.modal-box { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 18px 20px; width: min(560px, 100%); max-height: 90vh; overflow-y: auto; }
+.modal-box.sm { width: min(440px, 100%); }
+.modal-box h3 { margin: 0 0 6px; font-size: 17px; }
+.modal-box p { margin: 0 0 14px; color: var(--muted); white-space: pre-line; overflow-wrap: anywhere; }
+.modal .act { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+.lock { border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); background: color-mix(in srgb, var(--warn) 10%, transparent); color: var(--warn); border-radius: 9px; padding: 9px 12px; margin: 10px 0; }
+.toast { position: fixed; bottom: 22px; left: 50%; transform: translate(-50%, 20px); opacity: 0; transition: .25s; padding: 10px 18px; border-radius: 10px;
+  background: var(--text); color: var(--bg); font-weight: 500; pointer-events: none; z-index: 50; max-width: calc(100vw - 32px); }
+.toast.on { opacity: 1; transform: translate(-50%, 0); }
+.toast.err { background: var(--danger); color: #fff; }
+.foot { color: var(--muted); font-size: 12px; padding: 4px 0 24px; }
+
+@media (max-width: 1100px) { .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } .cols { grid-template-columns: 1fr; } }
+@media (pointer: coarse) { .btn { min-height: 44px; } .btn.sm { min-height: 40px; } .icon-btn { width: 44px; height: 44px; } .seg button { min-height: 40px; } }
+@media (max-width: 800px) {
+  .layout { grid-template-columns: 1fr; padding: 16px; gap: 14px; }
+  nav { position: static; flex-direction: row; overflow-x: auto; scrollbar-width: none; }
+  nav a { flex: none; min-height: 44px; white-space: nowrap; }
+  header { flex-wrap: wrap; padding: 10px 16px; gap: 10px; }
+  .grid2, .grid3 { grid-template-columns: 1fr; }
+  input, select, textarea { font-size: 16px; }
+  table.items-t .hide-sm { display: none; }
+}
+@media (max-width: 600px) { header { position: static; } header .ver { display: none; } .modal { padding: 12px; } .modal-box { padding: 16px; } }
+.savebar:not(.is-dirty) { position: static; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; } }
 </style>
 </head>
 <body>
-<header><div class="bar">
-  <h1>Orquestador IA</h1>
-  <span id="st" class="pill"><i></i>Cargando…</span>
-  <span class="sp"></span>
-  <span id="upd" class="muted" style="font-size:13px"></span>
-  <button id="theme" class="ghost" title="Tema claro u oscuro" aria-label="Cambiar tema">◐</button>
-  <button id="pauseBtn">…</button>
-</div></header>
+<header>
+  <span class="logo" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.5v2.2M8 12.3v2.2M1.5 8h2.2M12.3 8h2.2M3.4 3.4l1.5 1.5M11.1 11.1l1.5 1.5M3.4 12.6l1.5-1.5M11.1 4.9l1.5-1.5"/></svg></span>
+  <h1>Orquestador IA</h1><span class="ver" id="upd"></span>
+  <span class="pill" id="st"><i></i>Cargando…</span>
+  <div class="spacer"></div>
+  <button class="icon-btn" id="theme" title="Tema claro u oscuro" aria-label="Cambiar tema"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.5a6.5 6.5 0 1 0 0 13zM8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0" fill-rule="evenodd"/></svg></button>
+  <button class="btn" id="pauseBtn">…</button>
+</header>
 
-<main>
-  <section class="card c5"><h2>Ahora</h2><div id="now"></div></section>
-  <section class="card c7"><h2>Uso de Claude</h2><div id="usage"></div></section>
-  <section class="card c6"><h2>Preguntas pendientes <span class="n" id="nq">0</span></h2><div id="questions"></div></section>
-  <section class="card c6"><h2>Cola <span class="n" id="nc">0</span></h2><div id="queue"></div></section>
-  <section class="card c12"><h2>Últimas ejecuciones</h2><div class="tw" id="runs"></div></section>
-  <section class="card c6"><h2>Integración a main pendiente</h2><div id="integ"></div></section>
-  <section class="card c6"><h2>Permiso web por tarjeta</h2><div id="web"></div></section>
-  <section class="card c6"><h2>LaunchAgents</h2><div id="agents"></div></section>
-  <section class="card c6"><h2>Resumen en bruto</h2><div id="raw"></div></section>
-  <div class="foot">Solo lectura salvo las acciones con confirmación · cada acción queda en <span class="mono">logs/orq-panel.log</span></div>
-</main>
+<div class="layout">
+  <nav id="nav">
+    <a href="#resumen" class="on">Resumen</a>
+    <a href="#cola">Cola y tarjetas <span class="n" id="nNav">0</span></a>
+    <a href="#preguntas">Preguntas <span class="n" id="qNav">0</span></a>
+    <a href="#despachador">Despachador</a>
+    <a href="#sistema">Sistema</a>
+  </nav>
 
-<div class="dlg" id="dlg" role="dialog" aria-modal="true"><div class="box">
+  <main>
+    <section id="resumen" class="on">
+      <h2>Resumen</h2>
+      <p class="lead">Qué hace ahora el despachador, cuánto uso de Claude queda y las acciones rápidas (las mismas que la tarjeta de PhoneBox).</p>
+      <div class="tiles" id="tiles"></div>
+      <div class="cols">
+        <div class="card"><h3>Ahora</h3><div id="now"></div></div>
+        <div class="card"><h3>Uso de Claude <span class="sub" id="usageAt"></span></h3><div id="usage"></div></div>
+      </div>
+      <div class="card"><h3>Acciones rápidas</h3><div class="quick" id="quick"></div></div>
+      <div class="card"><h3>Últimas ejecuciones</h3><div class="tw" id="runs"></div></div>
+    </section>
+
+    <section id="cola">
+      <h2>Cola y tarjetas</h2>
+      <p class="lead">Tarjetas que el despachador cogerá, en el orden en que las mira. Abre cualquiera para asignarla a Claude u OpenCode, poner o quitar
+        etiquetas de modo, darle permiso web, subirla en la cola o relanzarla. Las tarjetas con <span class="mono">para-mí</span>, asignadas a ti o completadas no se pueden tocar desde aquí.</p>
+      <div class="card"><h3>Abrir una tarjeta</h3>
+        <div class="row" style="flex-wrap:nowrap"><input type="number" id="openId" placeholder="Id, p. ej. 443" min="1" style="max-width:220px"><button class="btn" id="openBtn">Abrir</button></div>
+      </div>
+      <div class="card"><h3>Cola <span class="sub" id="dryAt"></span></h3><div id="queue"></div></div>
+      <div class="card"><h3>Orden de prioridad</h3><div id="prio"></div>
+        <p class="muted" style="font-size:12px;margin:10px 0 0">Estas tarjetas van primero: su proyecto se visita antes y encabezan su columna. Se guarda en <span class="mono">orq-config.json</span> (<span class="mono">priority_tasks</span>).</p></div>
+    </section>
+
+    <section id="preguntas">
+      <h2>Preguntas</h2>
+      <p class="lead">Sesiones que se pararon con <span class="mono">PREGUNTA:</span>. Al responder se añade <span class="mono">RESPUESTA: …</span> a la nota y la etiqueta <span class="mono">ia·continuar</span>; la sesión se reanuda en el siguiente ciclo.</p>
+      <div class="card"><div id="questions"></div></div>
+    </section>
+
+    <section id="despachador">
+      <h2>Despachador</h2>
+      <p class="lead">Ajustes globales de <span class="mono">ai-dispatch.py</span>. Se guardan en <span class="mono">selfhost/orq-config.json</span> y se aplican en el siguiente ciclo; los que no cambies siguen con su valor por defecto. Un punto de color marca lo que ya no está por defecto.</p>
+      <div id="cfgErr"></div>
+      <form id="cfg" autocomplete="off"></form>
+    </section>
+
+    <section id="sistema">
+      <h2>Sistema</h2>
+      <p class="lead">Integraciones a main fallidas, permisos web concedidos y servicios de launchd.</p>
+      <div class="cols">
+        <div class="card"><h3>Integración a main pendiente</h3><div id="integ"></div></div>
+        <div class="card"><h3>Permiso web</h3><div id="web"></div></div>
+      </div>
+      <div class="card"><h3>LaunchAgents</h3><div class="tw" id="agents"></div></div>
+      <div class="card"><h3>Salida en bruto</h3><div id="raw"></div></div>
+      <div class="foot">Toda acción pide confirmación y queda en <span class="mono">selfhost/logs/orq-panel.log</span>. Solo escucha en 127.0.0.1.</div>
+    </section>
+  </main>
+</div>
+
+<div class="modal" id="dlg" hidden role="dialog" aria-modal="true"><div class="modal-box sm">
   <h3 id="dlgT"></h3><p id="dlgP"></p>
-  <div class="act"><button id="dlgNo">Cancelar</button><button id="dlgYes" class="primary">Confirmar</button></div>
+  <div class="act"><button class="btn" id="dlgNo">Cancelar</button><button class="btn primary" id="dlgYes">Confirmar</button></div>
 </div></div>
+<div class="modal" id="cardDlg" hidden role="dialog" aria-modal="true"><div class="modal-box" id="cardBox"></div></div>
 <div class="toast" id="toast"></div>
 
 <script>
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let S = null, drafts = {};
+let S = null, C = null, CARD = null, drafts = {}, cfgDirty = false;
 
-// theme
+// ---------------------------------------------------------------- theme + nav
 const root = document.documentElement;
 try { const t = localStorage.getItem('orq-theme'); if (t) root.dataset.theme = t; } catch (_) {}
 $('theme').onclick = () => {
@@ -125,23 +279,29 @@ $('theme').onclick = () => {
   root.dataset.theme = dark ? 'light' : 'dark';
   try { localStorage.setItem('orq-theme', root.dataset.theme); } catch (_) {}
 };
-
-function dur(s) {
-  s = Math.max(0, Math.round(s)); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60);
-  return h ? `${h} h ${m} min` : m ? `${m} min` : `${s} s`;
+function show(id) {
+  if (!document.getElementById(id)) id = 'resumen';
+  document.querySelectorAll('main > section').forEach((s) => s.classList.toggle('on', s.id === id));
+  document.querySelectorAll('nav a').forEach((a) => a.classList.toggle('on', a.getAttribute('href') === '#' + id));
+  if (id === 'despachador' && !cfgDirty) loadConfig();
 }
+window.addEventListener('hashchange', () => show(location.hash.slice(1)));
+show(location.hash.slice(1) || 'resumen');
+
+// ---------------------------------------------------------------- helpers
+function dur(s) { s = Math.max(0, Math.round(s)); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60); return h ? `${h} h ${m} min` : m ? `${m} min` : `${s} s`; }
 function ago(t) { return t ? dur(Date.now() / 1000 - t) : '—'; }
 function when(t) {
   const d = new Date(t * 1000), today = new Date();
   const hm = d.toLocaleTimeString('es-ES', {hour: '2-digit', minute: '2-digit'});
   return d.toDateString() === today.toDateString() ? hm : d.toLocaleDateString('es-ES', {day: 'numeric', month: 'short'}) + ' ' + hm;
 }
-function toast(msg) { const t = $('toast'); t.textContent = msg; t.classList.add('on'); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('on'), 2600); }
+function toast(msg, err) { const t = $('toast'); t.textContent = msg; t.className = 'toast on' + (err ? ' err' : ''); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('on'), 2800); }
 function confirmBox(title, text, yes = 'Confirmar', danger = false) {
   return new Promise((ok) => {
     $('dlgT').textContent = title; $('dlgP').textContent = text; $('dlgYes').textContent = yes;
-    $('dlgYes').className = danger ? 'danger' : 'primary'; $('dlg').classList.add('on'); $('dlgYes').focus();
-    const done = (v) => { $('dlg').classList.remove('on'); $('dlgYes').onclick = $('dlgNo').onclick = null; ok(v); };
+    $('dlgYes').className = 'btn ' + (danger ? 'warn' : 'primary'); $('dlg').hidden = false; $('dlgYes').focus();
+    const done = (v) => { $('dlg').hidden = true; $('dlgYes').onclick = $('dlgNo').onclick = null; ok(v); };
     $('dlgYes').onclick = () => done(true); $('dlgNo').onclick = () => done(false);
   });
 }
@@ -152,33 +312,41 @@ async function post(path, body) {
   if (j.state) render(j.state);
   return j;
 }
-
 const RES = {'ia·hecho': ['Hecho', 'ok'], 'ia·plan-listo': ['Plan listo', 'info'], 'ia·cambios': ['Cambios', 'warn'], 'ia·fallo': ['Fallo', 'bad'], 'ia·pregunta': ['Pregunta', 'warn'], 'review_deferred': ['Revisión aplazada', 'warn']};
 const MODE = {exec: 'Ejecutar', plan: 'Plan'};
+const RUNNER = {claude: 'Claude', opencode: 'OpenCode'};
+const cardBtn = (id) => `<button class="btn sm" data-card="${id}">Configurar</button>`;
 
+// ---------------------------------------------------------------- state render
 function render(s) {
   S = s;
   const st = $('st');
   if (s.paused) { st.className = 'pill warn'; st.innerHTML = '<i></i>En pausa'; }
-  else if (s.running) { st.className = 'pill info run'; st.innerHTML = '<i></i>Trabajando'; }
-  else { st.className = 'pill ok'; st.innerHTML = '<i></i>Activo, sin tarea'; }
+  else if (s.running) { st.className = 'pill run'; st.innerHTML = '<i></i>Trabajando'; }
+  else { st.className = 'pill on'; st.innerHTML = '<i></i>Activo'; }
   $('pauseBtn').textContent = s.paused ? 'Reanudar' : 'Pausar';
-  $('pauseBtn').className = s.paused ? 'primary' : '';
-  $('upd').textContent = 'Actualizado ' + new Date(s.now * 1000).toLocaleTimeString('es-ES');
+  $('pauseBtn').className = 'btn' + (s.paused ? ' primary' : '');
+  $('upd').textContent = 'actualizado ' + new Date(s.now * 1000).toLocaleTimeString('es-ES');
+  $('nNav').textContent = s.queue.length;
+  $('qNav').textContent = s.questions.length; $('qNav').className = 'n' + (s.questions.length ? ' hot' : '');
 
-  // now
-  const r = s.running;
+  const u = s.usage || {}, r = s.running;
+  $('tiles').innerHTML = [
+    ['Estado', s.paused ? 'En pausa' : r ? `t${r.id}` : 'Libre', r ? `<small>${dur(r.elapsed)}</small>` : ''],
+    ['En cola', s.queue.length, ''],
+    ['Preguntas', s.questions.length, '', s.questions.length ? 'warn' : ''],
+    ['5 h · semana', `${u.h5 ?? '?'}%`, `<small>· ${u.d7 ?? '?'}%</small>`, u.h5 >= 90 ? 'warn' : ''],
+  ].map(([k, v, x, c]) => `<div class="tile ${c || ''}"><div class="k">${k}</div><div class="v">${esc(v)} ${x}</div></div>`).join('');
+
   $('now').innerHTML = r ? `
     <div class="row"><span class="tid">t${r.id}</span><span class="tag info">${esc(MODE[r.mode] || r.mode)}</span><span class="muted">${esc(r.board)}</span></div>
     <div class="big">${esc(r.title)}</div>
-    <div class="row muted"><span>Lleva <b style="color:var(--ink)">${dur(r.elapsed)}</b></span><span>desde las ${when(r.start)}</span>
+    <div class="row muted"><span>Lleva <b style="color:var(--text)">${dur(r.elapsed)}</b></span><span>desde las ${when(r.start)}</span>
     ${r.steps ? `<span>${r.steps} pasos · $${r.cost.toFixed(2)}</span>` : ''}</div>
     ${s.paused ? '<p class="muted" style="margin:10px 0 0">La pausa no la corta: al terminar no arrancará otra.</p>' : ''}`
     : `<div class="big">${s.paused ? 'En pausa' : 'Sin tarea en curso'}</div>
-       <div class="muted">${s.paused ? 'Pausado desde las ' + when(s.paused_since) + '. No arranca ninguna tarjeta nueva ni el supervisor.' : 'El despachador mira la cola cada minuto.'}</div>`;
+       <div class="muted">${s.paused ? 'Pausado desde las ' + when(s.paused_since) + '. No arranca ninguna tarjeta nueva ni el supervisor.' : 'El despachador mira la cola en cada ciclo.'}</div>`;
 
-  // usage
-  const u = s.usage || {};
   const meter = (label, v, allowed, reset) => {
     const cls = v >= 90 ? 'bad' : v >= 70 ? 'warn' : '';
     return `<div class="meter"><div class="top"><span>${label}</span><span><b>${v ?? '?'}%</b> <span class="muted">· reinicia ${esc(reset || '—')}</span></span></div>
@@ -187,87 +355,248 @@ function render(s) {
   };
   const es = (t) => String(t).replace(/^no cooldown$/, 'sin cooldown').replace(/^exhausted$/, 'agotado').replace(/^ok$/i, 'disponible').replace(/cooldown until/i, 'en cooldown hasta');
   const cd = (txt) => !txt ? '<span class="tag">?</span>' : /no cooldown|^ok|available/i.test(txt) ? `<span class="tag ok">${esc(es(txt))}</span>` : `<span class="tag warn">${esc(es(txt))}</span>`;
-  const day = (r) => String(r || '—').replace(/\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\b/, (d) => ({Mon:'lun',Tue:'mar',Wed:'mié',Thu:'jue',Fri:'vie',Sat:'sáb',Sun:'dom'})[d]);
+  const day = (x) => String(x || '—').replace(/\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\b/, (d) => ({Mon:'lun',Tue:'mar',Wed:'mié',Thu:'jue',Fri:'vie',Sat:'sáb',Sun:'dom'})[d]);
+  $('usageAt').textContent = 'hace ' + ago(s.usage_at);
   $('usage').innerHTML = meter('Ventana de 5 h', u.h5, u.h5_allowed, u.h5_reset) + meter('Semana', u.d7, u.d7_allowed, day(u.d7_reset)) +
-    `<div class="grid2"><div><span class="muted">Claude</span><br>${cd(u.claude)}</div><div><span class="muted">OpenCode</span><br>${cd(u.opencode)}</div></div>
-     <p class="muted" style="margin:12px 0 0;font-size:13px">Decisión: ${esc((u.decision || '—').replace('OK to start Claude', 'puede arrancar Claude'))} · datos de hace ${ago(s.usage_at)}</p>`;
+    `<div class="row"><span class="muted">Claude</span>${cd(u.claude)}<span class="muted" style="margin-inline-start:8px">OpenCode</span>${cd(u.opencode)}</div>
+     <p class="muted" style="margin:10px 0 0;font-size:12.5px">Decisión: ${esc((u.decision || '—').replace('OK to start Claude', 'puede arrancar Claude'))}</p>`;
+
+  // quick actions
+  const L = s.latest || {}, q = L.question, f = L.relaunch;
+  $('quick').innerHTML = `
+    <div class="qa"><b>${s.paused ? 'Reanudar' : 'Pausar'}</b><small>${s.paused ? 'Vuelve a coger tarjetas en el siguiente ciclo.' : 'No arranca nada nuevo; lo que está en curso termina.'}</small>
+      <button class="btn sm ${s.paused ? 'primary' : ''}" data-quick="pause">${s.paused ? 'Reanudar' : 'Pausar'}</button></div>
+    <div class="qa"><b>Última pregunta</b><small>${q ? `t${q.id} · ${esc(q.text || q.title)}` : 'No hay preguntas.'}</small>
+      ${q ? `<button class="btn sm" data-goto="preguntas">Responder</button>` : ''}</div>
+    <div class="qa"><b>Aprobar permiso web</b><small>${q ? (q.web ? `t${q.id} ya tiene web.` : `Concede web a t${q.id} y la reanuda.`) : 'Sin pregunta a la que aplicarlo.'}</small>
+      ${q && !q.web ? `<button class="btn sm" data-quick="web">Aprobar web</button>` : ''}</div>
+    <div class="qa"><b>Relanzar</b><small>${f ? `t${f.id} · ${esc(f.title)} (falló, ${esc(MODE[f.mode] || f.mode)})` : 'Ninguna tarjeta en ia·fallo reciente.'}</small>
+      ${f ? `<button class="btn sm" data-quick="relaunch">Relanzar t${f.id}</button>` : ''}</div>`;
 
   // questions
-  $('nq').textContent = s.questions.length;
-  $('questions').innerHTML = s.questions.length ? '<ul class="list">' + s.questions.map((q) => `
+  $('questions').innerHTML = s.questions.length ? '<ul class="items">' + s.questions.map((x) => `
     <li><div class="main">
-      <div class="row"><span class="tid">t${q.id}</span><span class="muted">${esc(q.board)}</span>${q.ai ? `<span class="tag">${esc(q.ai)}</span>` : ''}</div>
-      <div class="title">${esc(q.title)}</div>
-      <div class="q">${esc(q.text || '(sin texto de pregunta)')}</div>
-      <textarea id="a${q.id}" placeholder="Tu respuesta…">${esc(drafts[q.id] || '')}</textarea>
-      <div class="row" style="margin-top:8px;justify-content:flex-end"><button class="primary small" data-answer="${q.id}">Responder y continuar</button></div>
+      <div class="row"><span class="tid">t${x.id}</span><span class="muted">${esc(x.board)}</span>${x.ai ? `<span class="tag acc">${esc(RUNNER[x.ai] || x.ai)}</span>` : ''}</div>
+      <div class="title" style="margin-top:4px">${esc(x.title)}</div>
+      <div class="q">${esc(x.text || '(sin texto de pregunta)')}</div>
+      <textarea id="a${x.id}" placeholder="Tu respuesta…">${esc(drafts[x.id] || '')}</textarea>
+      <div class="row" style="margin-top:8px;justify-content:flex-end">${cardBtn(x.id)}<button class="btn sm" data-qweb="${x.id}">Responder: web concedida</button><button class="btn primary sm" data-answer="${x.id}">Responder y continuar</button></div>
     </div></li>`).join('') + '</ul>' : '<div class="empty">No hay preguntas esperando.</div>';
 
-  // queue: inbox queued + dry-run reasons
+  // queue
   const why = {}; (s.dry || []).forEach((d) => { if (d.id) why[d.id] = d; });
   const warns = (s.dry || []).filter((d) => !d.id);
-  $('nc').textContent = s.queue.length;
-  $('queue').innerHTML = (s.queue.length ? '<ul class="list">' + s.queue.map((t) => {
-    const d = why[t.id]; const block = d && d.kind === 'espera';
-    return `<li><div class="main"><div class="row"><span class="tid">t${t.id}</span><span class="muted">${esc(t.board)}</span>
-      ${t.tags.filter((x) => x.startsWith('ia·')).map((x) => `<span class="tag">${esc(x)}</span>`).join('')}${t.ai ? `<span class="tag">${esc(t.ai)}</span>` : ''}</div>
-      <div class="title">${esc(t.title)}</div>
-      ${d ? `<div style="margin-top:4px"><span class="tag ${block ? 'warn' : 'ok'}">${block ? 'Bloqueada' : 'Lista'}</span> <span class="muted">${esc(d.text)}</span></div>` : ''}</div></li>`;
+  const prio = s.priority || [];
+  const order = [...s.queue].sort((a, b) => (prio.includes(a.id) ? prio.indexOf(a.id) : 1e9) - (prio.includes(b.id) ? prio.indexOf(b.id) : 1e9));
+  $('dryAt').textContent = 'bloqueos de hace ' + ago(s.dry_at);
+  $('queue').innerHTML = (order.length ? '<ul class="items">' + order.map((t) => {
+    const d = why[t.id], block = d && d.kind === 'espera';
+    return `<li><div class="main"><div class="row"><span class="tid">t${t.id}</span>${prio.includes(t.id) ? `<span class="tag acc">prioridad ${prio.indexOf(t.id) + 1}</span>` : ''}<span class="muted">${esc(t.board)}</span>
+      ${t.tags.filter((x) => x.startsWith('ia·')).map((x) => `<span class="tag">${esc(x)}</span>`).join('')}${t.ai ? `<span class="tag acc">${esc(RUNNER[t.ai] || t.ai)}</span>` : ''}</div>
+      <div class="title" style="margin-top:3px">${esc(t.title)}</div>
+      ${d ? `<div style="margin-top:4px"><span class="tag ${block ? 'warn' : 'ok'}">${block ? 'Bloqueada' : 'Lista'}</span> <span class="muted">${esc(d.text)}</span></div>` : ''}</div>${cardBtn(t.id)}</li>`;
   }).join('') + '</ul>' : '<div class="empty">Cola vacía.</div>') +
-    (warns.length ? `<p class="muted" style="font-size:13px;margin:10px 0 0">${warns.map((w) => esc(w.board + ': ' + w.text)).join('<br>')}</p>` : '') +
-    `<p class="muted" style="font-size:12px;margin:8px 0 0">Bloqueos de <span class="mono">--dry-run</span> de hace ${ago(s.dry_at)}${s.lock ? ' (con una tarea en curso se conserva el último)' : ''}.</p>`;
+    (warns.length ? `<p class="muted" style="font-size:12.5px;margin:10px 0 0">${warns.map((w) => esc(w.board + ': ' + w.text)).join('<br>')}</p>` : '');
+  const titles = {}; s.queue.forEach((t) => titles[t.id] = t.title); s.runs.forEach((x) => titles[x.id] = titles[x.id] || x.title);
+  $('prio').innerHTML = prio.length ? '<div class="prio">' + prio.map((id, i) => `<div class="prio-row"><span class="pos">${i + 1}</span><span class="tid">t${id}</span><span class="nm">${esc(titles[id] || '')}</span>
+    <button class="icon-btn" title="Subir" aria-label="Subir" data-prio="${id}|up" ${i ? '' : 'disabled'}><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 10l4-4 4 4"/></svg></button>
+    <button class="icon-btn" title="Bajar" aria-label="Bajar" data-prio="${id}|down" ${i < prio.length - 1 ? '' : 'disabled'}><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6l4 4 4-4"/></svg></button>
+    <button class="icon-btn" title="Quitar" aria-label="Quitar de prioridad" data-prio="${id}|remove"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4l8 8M12 4l-8 8"/></svg></button></div>`).join('') + '</div>'
+    : '<div class="empty">Sin prioridades: orden normal (proyectos prioritarios, luego rotación entre proyectos).</div>';
 
   // runs
   const rows = s.runs.slice(0, 15);
-  $('runs').innerHTML = rows.length ? `<table><thead><tr><th>Tarjeta</th><th>Proyecto</th><th>Modo</th><th>Resultado</th><th class="num">Duración</th><th class="num">Coste</th><th class="num">Inicio</th></tr></thead><tbody>` +
-    rows.map((r) => {
-      const res = r.end ? (RES[r.result] || [r.result || (r.ok ? 'OK' : 'Fallo'), r.ok ? 'ok' : 'bad']) : (s.running && s.running.id === r.id && s.running.start === r.start ? ['En curso', 'info'] : ['Sin cierre', '']);
-      return `<tr><td><span class="tid">t${r.id}</span> ${esc(r.title)}</td><td class="muted">${esc(r.board)}</td><td>${esc(MODE[r.mode] || r.mode)}${r.runner ? `<div class="muted" style="font-size:12px">${esc(r.runner)}</div>` : ''}</td>
-        <td><span class="tag ${res[1]}">${esc(res[0])}</span></td><td class="num">${r.secs != null ? dur(r.secs) : '—'}</td><td class="num">${r.cost ? '$' + r.cost.toFixed(2) : '—'}</td><td class="num muted">${when(r.start)}</td></tr>`;
+  $('runs').innerHTML = rows.length ? `<table class="items-t"><thead><tr><th>Tarjeta</th><th class="hide-sm">Proyecto</th><th>Modo</th><th>Resultado</th><th class="num hide-sm">Duración</th><th class="num hide-sm">Coste</th><th class="num">Inicio</th><th></th></tr></thead><tbody>` +
+    rows.map((x) => {
+      const res = x.end ? (RES[x.result] || [x.result || (x.ok ? 'OK' : 'Fallo'), x.ok ? 'ok' : 'bad']) : (s.running && s.running.id === x.id && s.running.start === x.start ? ['En curso', 'info'] : ['Sin cierre', '']);
+      return `<tr><td><span class="tid">t${x.id}</span> ${esc(x.title)}</td><td class="muted hide-sm">${esc(x.board)}</td><td>${esc(MODE[x.mode] || x.mode)}${x.runner ? `<div class="muted" style="font-size:12px">${esc(RUNNER[x.runner] || x.runner)}</div>` : ''}</td>
+        <td><span class="tag ${res[1]}">${esc(res[0])}</span></td><td class="num hide-sm">${x.secs != null ? dur(x.secs) : '—'}</td><td class="num hide-sm">${x.cost ? '$' + x.cost.toFixed(2) : '—'}</td><td class="num muted">${when(x.start)}</td>
+        <td class="num"><button class="btn sm" data-card="${x.id}">Abrir</button></td></tr>`;
     }).join('') + '</tbody></table>' : '<div class="empty">Sin ejecuciones en el log.</div>';
 
   // integrations
   const jobs = s.jobs || {};
-  $('integ').innerHTML = s.integrations.length ? '<ul class="list">' + s.integrations.map((i) => {
+  $('integ').innerHTML = s.integrations.length ? '<ul class="items">' + s.integrations.map((i) => {
     const j = jobs[i.repo + ':' + i.branch];
     return `<li><div class="main"><div class="row"><span class="tid">t${i.id}</span><span class="mono muted">${esc(i.repo)} · ${esc(i.branch)}</span><span class="muted" style="font-size:12px">${when(i.at)}</span></div>
-      <div class="title">${esc(i.title)}</div><div class="muted" style="font-size:13px">${esc(i.text)}</div>
+      <div class="title">${esc(i.title)}</div><div class="muted" style="font-size:12.5px">${esc(i.text)}</div>
       ${j ? `<div style="margin-top:6px"><span class="tag ${j.state === 'ok' ? 'ok' : j.state === 'fallo' ? 'bad' : 'info'}">Reintento: ${esc(j.state)}</span>${j.out ? `<pre>${esc(j.out)}</pre>` : ''}</div>` : ''}</div>
-      ${i.allowed ? `<button class="small" data-integ="${esc(i.repo)}|${esc(i.branch)}" ${j && j.state === 'corriendo' ? 'disabled' : ''}>Reintentar</button>` : ''}</li>`;
+      ${i.allowed ? `<button class="btn sm" data-integ="${esc(i.repo)}|${esc(i.branch)}" ${j && j.state === 'corriendo' ? 'disabled' : ''}>Reintentar</button>` : ''}</li>`;
   }).join('') + '</ul>' : '<div class="empty">Nada pendiente de integrar (últimos 14 días).</div>';
 
   // web
-  $('web').innerHTML = (s.web.length ? '<ul class="list">' + s.web.map((w) => `<li><div class="main"><span class="tid">t${w.id}</span> ${esc(w.title || '')}</div>
-    <button class="small" data-web-off="${w.id}">Quitar</button></li>`).join('') + '</ul>' : '<div class="empty">Ninguna tarjeta con permiso web en ejecución.</div>') +
-    `<div class="row" style="margin-top:12px;flex-wrap:nowrap"><input type="number" id="webId" placeholder="Id de tarjeta, p. ej. 441" min="1" style="flex:1"><button class="small" id="webAdd">Conceder web</button></div>
-     <p class="muted" style="font-size:12px;margin:8px 0 0">Los planes siempre pueden usar la web; esto lo abre también a la ejecución de esa tarjeta (<span class="mono">web-tasks.txt</span>).</p>`;
+  $('web').innerHTML = (s.web.length ? '<ul class="items">' + s.web.map((w) => `<li><div class="main"><span class="tid">t${w.id}</span> ${esc(w.title || '')}</div>
+    <button class="btn sm danger" data-web-off="${w.id}">Quitar</button></li>`).join('') + '</ul>' : '<div class="empty">Ninguna tarjeta con permiso web en ejecución.</div>') +
+    `<p class="muted" style="font-size:12px;margin:10px 0 0">Los planes siempre pueden usar la web; esto lo abre también a la ejecución (<span class="mono">web-tasks.txt</span>). Para concederlo, abre la tarjeta.</p>`;
 
-  // agents
-  const nice = {'com.example.taskview-ai': 'Despachador (cada 60 s)', 'com.example.taskview-supervisor': 'Supervisor (cada 15 min)', 'com.example.taskview-orq-panel': 'Este panel'};
-  $('agents').innerHTML = '<table><tbody>' + s.agents.map((a) => {
+  const nice = {'com.example.taskview-ai': 'Despachador', 'com.example.taskview-supervisor': 'Supervisor (cada 15 min)', 'com.example.taskview-orq-panel': 'Este panel'};
+  $('agents').innerHTML = '<table class="items-t"><tbody>' + s.agents.map((a) => {
     const [txt, cls] = !a.loaded ? ['No cargado', 'bad'] : a.pid ? ['En marcha', 'info'] : a.last_exit === '0' ? ['Listo', 'ok'] : ['Salida ' + a.last_exit, 'warn'];
-    return `<tr><td><div>${esc(nice[a.label] || a.label.replace('com.example.taskview-', ''))}</div><div class="mono muted" style="font-size:11.5px">${esc(a.label)}</div></td>
+    return `<tr><td><div>${esc(nice[a.label] || a.label.replace('com.example.taskview-', ''))}</div><div class="mono muted">${esc(a.label)}</div></td>
       <td class="num">${a.pid ? `<span class="mono muted">pid ${a.pid}</span> ` : ''}<span class="tag ${cls}">${esc(txt)}</span></td></tr>`;
   }).join('') + '</tbody></table>';
-
-  $('raw').innerHTML = `<details><summary>Salida de <span class="mono">estado-orquestador</span> y uso</summary><pre>${esc(s.estado || '')}</pre><pre>${esc((s.usage || {}).raw || '')}</pre></details>`;
+  $('raw').innerHTML = `<details><summary>Salida de estado-orquestador y de --usage</summary><pre>${esc(s.estado || '')}</pre><pre>${esc(u.raw || '')}</pre></details>`;
 }
 
-document.addEventListener('input', (e) => { if (e.target.id && e.target.id[0] === 'a') drafts[e.target.id.slice(1)] = e.target.value; });
-document.addEventListener('click', async (e) => {
-  const b = e.target.closest('button'); if (!b) return;
+// ---------------------------------------------------------------- card dialog
+async function openCard(id) {
+  const r = await fetch('/api/task/' + id); const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || r.status);
+  CARD = j; renderCard(); $('cardDlg').hidden = false;
+}
+function renderCard() {
+  const c = CARD, off = c.locked ? 'disabled' : '';
+  const sw = (key, on, label, hint, dis) => `<div class="sw-row"><div class="lbl">${label}${hint ? `<small>${hint}</small>` : ''}</div>
+    <label class="switch"><input type="checkbox" data-op="${key}" ${on ? 'checked' : ''} ${off} ${dis ? 'disabled' : ''}><span></span></label></div>`;
+  const prioTxt = c.priority ? `Posición ${c.priority} en la lista de prioridad.` : 'Sin prioridad: orden normal del tablero.';
+  const running = c.tags.includes('ia·trabajando');
+  $('cardBox').innerHTML = `
+    <div class="row"><span class="tid">t${c.id}</span><span class="muted">${esc(c.board || 'proyecto ' + c.goalId)}</span>${c.tags.map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div>
+    <h3 style="margin-top:8px">${esc(c.title)}</h3>
+    ${c.locked ? `<div class="lock">No se puede tocar desde el panel: ${esc(c.locked)}.</div>` : ''}
+    ${!c.served ? `<div class="lock">Este proyecto no lo sirve el despachador (no está en REPOS o está archivado).</div>` : ''}
+    <div class="opt-section">Quién la ejecuta</div>
+    ${sw('assign:claude', c.runners.includes('claude'), 'Claude', c.ai_collab.claude ? '' : 'No colabora en este proyecto', !c.ai_collab.claude)}
+    ${sw('assign:opencode', c.runners.includes('opencode'), 'OpenCode', c.ai_collab.opencode ? '' : 'No colabora en este proyecto', !c.ai_collab.opencode)}
+    <div class="opt-section">Qué hace</div>
+    ${sw('tag:ia·plan', c.tags.includes('ia·plan'), 'ia·plan', 'Solo planifica, sin tocar código', !c.mode_tags['ia·plan'])}
+    ${sw('tag:ia·ejecutar', c.tags.includes('ia·ejecutar'), 'ia·ejecutar', 'Implementa en su worktree ai/t' + c.id, !c.mode_tags['ia·ejecutar'])}
+    ${sw('tag:ia·continuar', c.tags.includes('ia·continuar'), 'ia·continuar', 'Reanuda la sesión tras una RESPUESTA', !c.mode_tags['ia·continuar'])}
+    ${sw('web', c.web, 'Permiso web en ejecución', 'WebSearch y WebFetch también al implementar')}
+    <div class="opt-section">Cola</div>
+    <div class="row"><span class="muted" style="flex:1">${prioTxt}</span>
+      <div class="seg"><button data-cprio="top" ${off}>Primera</button><button data-cprio="up" ${off || !c.priority ? 'disabled' : ''}>Subir</button><button data-cprio="down" ${off || !c.priority ? 'disabled' : ''}>Bajar</button><button data-cprio="remove" ${off || !c.priority ? 'disabled' : ''}>Quitar</button></div></div>
+    <div class="act"><button class="btn" data-relaunch ${off || running ? 'disabled' : ''} title="Vuelve a poner su etiqueta de modo">Relanzar</button><span class="spacer"></span><button class="btn primary" id="cardClose">Cerrar</button></div>`;
+}
+const OPDESC = {
+  'assign:claude': (on) => [on ? 'Asignar a Claude' : 'Quitar a Claude', on ? 'Claude pasa a ser quien la ejecuta (el resto de asignados se mantiene).' : 'Sin IA asignada, la etiqueta de modo no hace nada.'],
+  'assign:opencode': (on) => [on ? 'Asignar a OpenCode' : 'Quitar a OpenCode', on ? 'OpenCode la ejecutará (si también está Claude, decide el ajuste «asignada a las dos»).' : 'Se quita OpenCode de los asignados.'],
+  web: (on) => [on ? 'Conceder la web' : 'Quitar la web', on ? 'Su ejecución podrá usar WebSearch y WebFetch.' : 'Su próxima ejecución ya no podrá buscar ni leer páginas web.'],
+};
+document.addEventListener('change', async (e) => {
+  const op = e.target.dataset && e.target.dataset.op; if (!op || !CARD) return;
+  const on = e.target.checked; e.target.checked = !on;  // only after confirming
+  const [title, text] = OPDESC[op] ? OPDESC[op](on) : [`${on ? 'Poner' : 'Quitar'} ${op.slice(4)}`, op === 'tag:ia·continuar' && on ? 'Solo tiene efecto si la nota ya lleva RESPUESTA: tras la línea Sesión IA.' : on ? 'El despachador la cogerá en el próximo ciclo si tiene una IA asignada.' : 'Deja de estar en la cola.'];
+  if (!await confirmBox(`t${CARD.id}: ${title}`, text, on ? 'Confirmar' : 'Quitar', !on)) return;
+  const [kind, arg] = op.split(':');
+  const body = kind === 'assign' ? {op: 'assign', runner: arg, on} : kind === 'tag' ? {op: 'tag', name: arg, on} : {op: 'web', on};
+  try { const j = await post('/api/task', {id: CARD.id, ...body}); CARD = j.card; renderCard(); toast(`t${CARD.id}: ${title.toLowerCase()}`); load(); }
+  catch (err) { toast('No se pudo: ' + err.message, true); }
+});
+
+// ---------------------------------------------------------------- dispatcher config
+const LBL = {
+  tick_secs: ['Intervalo entre ciclos (s)', 'launchd lo lanza cada 60 s; con un valor mayor se salta ciclos.'],
+  max_rounds: ['Rondas ejecutar + revisión', 'Veces que reintenta si la revisión pide cambios.'],
+  runner_both: ['Si está asignada a las dos IA', ''],
+  default_runner: ['Con etiqueta de modo y nadie asignado', 'Nunca afecta a tarjetas asignadas a ti ni a otra persona.'],
+  handoff_to_opencode: ['Pasar a OpenCode cuando Claude no puede', 'Ritmo, reserva o cooldown de Claude: las tarjetas ia·ejecutar siguen con OpenCode. Apagado: esperan.'],
+  pace_hours: ['Duración mínima de la ventana de 5 h (h)', ''], pace_slack: ['Margen sobre la línea, 5 h (%)', ''], pace_hard: ['Tope duro, 5 h (%)', 'A partir de aquí no arranca Claude.'],
+  week_slack: ['Margen sobre la línea, semana (%)', ''], week_hard: ['Tope duro, semana (%)', ''],
+  usage_alerts: ['Avisos al móvil al llegar a (%)', 'Separados por comas.'],
+  budget_usd: ['Presupuesto por sesión (USD)', ''],
+  merge_to_main_repos: ['Merge automático a main tras ia·hecho', 'Solo estos repos se integran solos en main (nunca --force).'],
+  disabled_boards: ['Proyectos habilitados', 'Desmarcado: el despachador lo salta aunque tenga tarjetas.'],
+  priority_projects: ['Proyectos prioritarios', 'Se sirven primero en cada ciclo.'],
+};
+async function loadConfig() {
+  try { const r = await fetch('/api/config'); C = await r.json(); renderConfig(C.config); } catch (e) { $('cfg').innerHTML = '<div class="empty">No se pudo leer la configuración.</div>'; }
+}
+function renderConfig(v, errors = {}) {
+  const d = C.defaults, ch = C.choices;
+  const mark = (k) => JSON.stringify(v[k]) !== JSON.stringify(d[k]) ? '<i class="chg" title="Cambiado respecto al valor por defecto"></i>' : '';
+  const msg = (k) => errors[k] ? `<span class="msg">${esc(errors[k])}</span>` : '';
+  const def = (k) => `Por defecto: ${esc(Array.isArray(d[k]) ? (d[k].join(', ') || 'ninguno') : d[k] === null ? 'nadie' : d[k] === true ? 'sí' : d[k] === false ? 'no' : typeof d[k] === 'object' ? Object.entries(d[k]).map(([a, b]) => a + ' ' + b).join(', ') : d[k])}.`;
+  const num = (k) => { const [, rg] = C.spec[k]; return `<div class="field ${errors[k] ? 'err' : ''}"><label for="f_${k}">${LBL[k][0]} ${mark(k)}</label>
+    <input type="number" id="f_${k}" data-k="${k}" min="${rg[0]}" max="${rg[1]}" step="1" value="${esc(v[k])}"><span class="hint">${LBL[k][1] ? esc(LBL[k][1]) + ' ' : ''}${def(k)} Rango ${rg[0]}–${rg[1]}.</span>${msg(k)}</div>`; };
+  const seg = (k, opts) => `<div class="field ${errors[k] ? 'err' : ''}"><label>${LBL[k][0]} ${mark(k)}</label><div><div class="seg" data-k="${k}">${opts.map(([val, t]) =>
+    `<button type="button" data-v='${JSON.stringify(val)}' class="${JSON.stringify(v[k]) === JSON.stringify(val) ? 'on' : ''}">${t}</button>`).join('')}</div></div><span class="hint">${LBL[k][1] ? esc(LBL[k][1]) + ' ' : ''}${def(k)}</span>${msg(k)}</div>`;
+  const checks = (k, items, invert) => `<div class="field ${errors[k] ? 'err' : ''}"><label>${LBL[k][0]} ${mark(k)}</label><div class="checks" data-k="${k}" data-invert="${invert ? 1 : 0}">${items.map(([val, t]) =>
+    `<label class="check"><input type="checkbox" value='${esc(JSON.stringify(val))}' ${(v[k].includes(val)) !== !!invert ? 'checked' : ''}>${esc(t)}</label>`).join('')}</div><span class="hint">${esc(LBL[k][1])} ${def(k)}</span>${msg(k)}</div>`;
+  $('cfgErr').innerHTML = Object.keys(C.errors || {}).length ? `<div class="lock">El fichero tiene valores no válidos; se usan los de por defecto en: ${esc(Object.entries(C.errors).map(([k, e]) => k + ' (' + e + ')').join(', '))}</div>` : '';
+  const boards = ch.disabled_boards.map((b) => [b, b]);
+  $('cfg').innerHTML = `
+    <div class="card"><h3>Ciclo y ejecución</h3><div class="grid2">${num('tick_secs')}${num('max_rounds')}</div>
+      <div class="field"><label>${LBL.budget_usd[0]} ${mark('budget_usd')}</label><div class="grid3">${['plan', 'exec', 'review'].map((m) =>
+        `<div class="field" style="margin:0"><span class="hint">${({plan: 'Plan', exec: 'Ejecutar', review: 'Revisión'})[m]}</span><input type="number" data-k="budget_usd" data-sub="${m}" min="0.1" max="50" step="0.5" value="${esc(v.budget_usd[m])}"></div>`).join('')}</div>
+        <span class="hint">${def('budget_usd')}</span>${msg('budget_usd')}</div></div>
+    <div class="card"><h3>Quién ejecuta</h3>
+      ${seg('runner_both', [['claude', 'Claude'], ['opencode', 'OpenCode']])}
+      ${seg('default_runner', [[null, 'Nadie'], ['claude', 'Claude'], ['opencode', 'OpenCode']])}
+      <div class="sw-row"><div class="lbl">${LBL.handoff_to_opencode[0]} ${mark('handoff_to_opencode')}<small>${esc(LBL.handoff_to_opencode[1])} ${def('handoff_to_opencode')}</small></div>
+        <label class="switch"><input type="checkbox" data-k="handoff_to_opencode" ${v.handoff_to_opencode ? 'checked' : ''}><span></span></label></div></div>
+    <div class="card"><h3>Límites de uso y ritmo de Claude</h3>
+      <div class="grid3">${num('pace_hours')}${num('pace_slack')}${num('pace_hard')}</div>
+      <div class="grid3">${num('week_slack')}${num('week_hard')}
+        <div class="field ${errors.usage_alerts ? 'err' : ''}"><label for="f_usage_alerts">${LBL.usage_alerts[0]} ${mark('usage_alerts')}</label><input type="text" id="f_usage_alerts" data-k="usage_alerts" value="${esc(v.usage_alerts.join(', '))}"><span class="hint">${LBL.usage_alerts[1]} ${def('usage_alerts')}</span>${msg('usage_alerts')}</div></div></div>
+    <div class="card"><h3>Proyectos</h3>
+      ${checks('disabled_boards', boards, true)}
+      ${checks('priority_projects', ch.priority_projects.map((g) => [g.id, g.name]))}
+      ${checks('merge_to_main_repos', ch.merge_to_main_repos.map((r) => [r, r]))}</div>
+    <div class="savebar" id="saveBar"><span class="dirty"><i></i>Cambios sin guardar</span><span class="spacer"></span>
+      <button type="button" class="btn" id="cfgDefaults">Valores por defecto</button><button type="button" class="btn" id="cfgRevert" disabled>Descartar</button><button type="button" class="btn primary" id="cfgSave" disabled>Guardar</button></div>`;
+  setDirty(cfgDirty);
+}
+function readConfig() {
+  const v = JSON.parse(JSON.stringify(C.config)), f = $('cfg');
+  f.querySelectorAll('input[type=number][data-k]').forEach((i) => { const k = i.dataset.k, n = i.value === '' ? NaN : Number(i.value); if (i.dataset.sub) v[k][i.dataset.sub] = n; else v[k] = n; });
+  v.usage_alerts = $('f_usage_alerts').value.split(/[,\s]+/).filter(Boolean).map(Number);
+  f.querySelectorAll('.seg[data-k]').forEach((s) => { const b = s.querySelector('button.on'); if (b) v[s.dataset.k] = JSON.parse(b.dataset.v); });
+  v.handoff_to_opencode = f.querySelector('input[data-k=handoff_to_opencode]').checked;
+  f.querySelectorAll('.checks[data-k]').forEach((c) => {
+    const all = [...c.querySelectorAll('input')], inv = c.dataset.invert === '1';
+    v[c.dataset.k] = all.filter((i) => i.checked !== inv).map((i) => JSON.parse(i.value));
+  });
+  v.priority_tasks = (S && S.priority) || C.config.priority_tasks;
+  return v;
+}
+function setDirty(on) { cfgDirty = on; $('saveBar') && $('saveBar').classList.toggle('is-dirty', on); if ($('cfgSave')) { $('cfgSave').disabled = !on; $('cfgRevert').disabled = !on; } }
+$('cfg').addEventListener('input', () => setDirty(true));
+$('cfg').addEventListener('change', () => setDirty(true));
+const NAMES = {tick_secs: 'intervalo', max_rounds: 'rondas', budget_usd: 'presupuesto', runner_both: 'asignada a las dos', default_runner: 'sin asignar', handoff_to_opencode: 'pasar a OpenCode',
+  pace_hours: 'ventana 5 h', pace_slack: 'margen 5 h', pace_hard: 'tope 5 h', week_slack: 'margen semana', week_hard: 'tope semana', usage_alerts: 'avisos',
+  merge_to_main_repos: 'merge a main', disabled_boards: 'proyectos desactivados', priority_projects: 'proyectos prioritarios', priority_tasks: 'tarjetas prioritarias'};
+async function saveConfig(v, label) {
+  const old = C.config, keys = Object.keys(v).filter((k) => JSON.stringify(v[k]) !== JSON.stringify(old[k]));
+  if (!keys.length) { setDirty(false); return toast('Sin cambios'); }
+  const show = (x) => Array.isArray(x) ? (x.join(', ') || 'ninguno') : x === null ? 'nadie' : typeof x === 'object' ? Object.entries(x).map(([a, b]) => a + ' ' + b).join(', ') : String(x);
+  if (!await confirmBox(label || '¿Guardar los ajustes del despachador?', keys.map((k) => `${NAMES[k] || k}: ${show(old[k])} → ${show(v[k])}`).join('\n') + '\n\nSe aplica en el siguiente ciclo.', 'Guardar')) return;
   try {
-    if (b.id === 'pauseBtn') {
+    const j = await post('/api/config', {config: v}); C = j.config; setDirty(false); renderConfig(C.config); toast('Ajustes guardados'); load();
+  } catch (err) {
+    const errors = {}; String(err.message).split('; ').forEach((p) => { const i = p.indexOf(': '); if (i > 0) errors[p.slice(0, i)] = p.slice(i + 2); });
+    renderConfig(v, errors); setDirty(true); toast('Revisa los campos marcados', true);
+  }
+}
+
+// ---------------------------------------------------------------- clicks
+document.addEventListener('input', (e) => { if (e.target.id && /^a\d+$/.test(e.target.id)) drafts[e.target.id.slice(1)] = e.target.value; });
+document.addEventListener('click', async (e) => {
+  const b = e.target.closest('button'); if (!b || b.disabled) return;
+  try {
+    if (b.id === 'pauseBtn' || b.dataset.quick === 'pause') {
       const on = !S.paused;
       if (!await confirmBox(on ? '¿Pausar el orquestador?' : '¿Reanudar el orquestador?',
-        on ? 'No arrancará ninguna tarjeta nueva ni el supervisor. Si hay una tarea en curso, termina normalmente.' : 'El despachador volverá a coger tarjetas de la cola en el próximo minuto.',
+        on ? 'No arrancará ninguna tarjeta nueva ni el supervisor. Si hay una tarea en curso, termina normalmente.' : 'El despachador volverá a coger tarjetas de la cola en el próximo ciclo.',
         on ? 'Pausar' : 'Reanudar', on)) return;
       await post('/api/pause', {on}); toast(on ? 'Orquestador en pausa' : 'Orquestador reanudado');
-    } else if (b.dataset.answer) {
-      const id = +b.dataset.answer, text = ($('a' + id).value || '').trim();
-      if (!text) return toast('Escribe una respuesta');
-      if (!await confirmBox(`¿Responder a t${id}?`, 'Se añade «RESPUESTA: …» a la nota y la etiqueta ia·continuar; el despachador la retomará.', 'Enviar')) return;
-      b.disabled = true; await post('/api/answer', {id, text}); delete drafts[id]; toast(`Respuesta enviada a t${id}`);
+    } else if (b.dataset.quick === 'web') {
+      const q = S.latest.question;
+      if (!await confirmBox(`¿Aprobar la web para t${q.id}?`, 'Se añade a web-tasks.txt, se responde «Permiso web concedido…» y se pone ia·continuar para reanudarla.', 'Aprobar')) return;
+      await post('/api/quick', {op: 'web'}); toast(`t${q.id}: web concedida`);
+    } else if (b.dataset.quick === 'relaunch') {
+      const f = S.latest.relaunch;
+      if (!await confirmBox(`¿Relanzar t${f.id}?`, `Vuelve a ponerle ${f.mode === 'plan' ? 'ia·plan' : 'ia·ejecutar'}; el despachador la cogerá en el próximo ciclo.`, 'Relanzar')) return;
+      await post('/api/quick', {op: 'relaunch'}); toast(`t${f.id} relanzada`);
+    } else if (b.dataset.goto) { location.hash = b.dataset.goto; }
+    else if (b.dataset.answer || b.dataset.qweb) {
+      const id = +(b.dataset.answer || b.dataset.qweb), web = !!b.dataset.qweb, text = web ? '' : ($('a' + id).value || '').trim();
+      if (!web && !text) return toast('Escribe una respuesta', true);
+      if (!await confirmBox(`¿Responder a t${id}?`, web ? 'Concede la web a esta tarjeta y responde «Permiso web concedido…»; se reanuda en el próximo ciclo.' : 'Se añade «RESPUESTA: …» a la nota y la etiqueta ia·continuar; el despachador la retomará.', 'Enviar')) return;
+      b.disabled = true;
+      if (web) { await post('/api/web', {id, on: true}); await post('/api/answer', {id, text: 'Permiso web concedido: puedes usar WebSearch y WebFetch. Continúa.'}); }
+      else await post('/api/answer', {id, text});
+      delete drafts[id]; toast(`Respuesta enviada a t${id}`);
     } else if (b.dataset.integ) {
       const [repo, branch] = b.dataset.integ.split('|');
       if (!await confirmBox('¿Reintentar la integración?', `Mergea ${branch} en main de ${repo}, pasa los tests y hace push normal. Si hay una tarjeta en curso, se rechaza sin tocar nada.`, 'Reintentar')) return;
@@ -276,19 +605,33 @@ document.addEventListener('click', async (e) => {
       const id = +b.dataset.webOff;
       if (!await confirmBox(`¿Quitar la web a t${id}?`, 'Su próxima ejecución ya no podrá buscar ni leer páginas web.', 'Quitar', true)) return;
       await post('/api/web', {id, on: false}); toast(`Web retirada a t${id}`);
-    } else if (b.id === 'webAdd') {
-      const id = parseInt($('webId').value, 10); if (!id) return toast('Pon el id de la tarjeta');
-      if (!await confirmBox(`¿Conceder la web a t${id}?`, 'Su ejecución podrá usar WebSearch y WebFetch.', 'Conceder')) return;
-      await post('/api/web', {id, on: true}); toast(`Web concedida a t${id}`);
-    }
-  } catch (err) { toast('Error: ' + err.message); b.disabled = false; }
+    } else if (b.dataset.card) { await openCard(+b.dataset.card); }
+    else if (b.id === 'openBtn') { const id = parseInt($('openId').value, 10); if (!id) return toast('Pon el id de la tarjeta', true); await openCard(id); }
+    else if (b.id === 'cardClose') { $('cardDlg').hidden = true; CARD = null; }
+    else if (b.dataset.cprio || b.dataset.prio) {
+      const [id, move] = b.dataset.prio ? b.dataset.prio.split('|') : [CARD.id, b.dataset.cprio];
+      const txt = {top: 'ponerla la primera', up: 'subirla un puesto', down: 'bajarla un puesto', remove: 'quitarla de la lista de prioridad'}[move];
+      if (!await confirmBox(`t${id}: ¿${txt}?`, 'Cambia priority_tasks en orq-config.json; se aplica en el próximo ciclo.', 'Confirmar')) return;
+      const j = await post('/api/task', {id: +id, op: 'priority', move}); if (CARD && CARD.id === +id) { CARD = j.card; renderCard(); }
+      if (C && !cfgDirty) loadConfig(); toast('Prioridad actualizada'); load();
+    } else if (b.dataset.relaunch !== undefined && CARD) {
+      if (!await confirmBox(`¿Relanzar t${CARD.id}?`, 'Vuelve a ponerle la etiqueta de modo de su última ejecución (o ia·ejecutar si no hay); necesita una IA asignada.', 'Relanzar')) return;
+      const j = await post('/api/task', {id: CARD.id, op: 'relaunch'}); CARD = j.card; renderCard(); toast(`t${CARD.id} relanzada`); load();
+    } else if (b.closest('.seg[data-k]')) {
+      b.parentElement.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b)); setDirty(true);
+    } else if (b.id === 'cfgSave') { await saveConfig(readConfig()); }
+    else if (b.id === 'cfgRevert') { setDirty(false); renderConfig(C.config); }
+    else if (b.id === 'cfgDefaults') { await saveConfig({...JSON.parse(JSON.stringify(C.defaults)), priority_tasks: C.config.priority_tasks}, '¿Volver a los valores por defecto?'); }
+  } catch (err) { toast('Error: ' + err.message, true); b.disabled = false; }
 });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { if (!$('dlg').hidden) $('dlgNo').click(); else if (!$('cardDlg').hidden) { $('cardDlg').hidden = true; CARD = null; } } });
 
 async function load() {
   try { const r = await fetch('/api/state'); if (r.ok) render(await r.json()); else throw 0; }
-  catch (_) { $('st').className = 'pill bad'; $('st').innerHTML = '<i></i>Sin conexión con el panel'; }
+  catch (_) { $('st').className = 'pill err'; $('st').innerHTML = '<i></i>Sin conexión'; }
 }
-load(); setInterval(() => { if (!$('dlg').classList.contains('on') && !document.activeElement?.matches('textarea,input')) load(); }, 15000);
+load();
+setInterval(() => { if ($('dlg').hidden && $('cardDlg').hidden && !document.activeElement?.matches('textarea,input')) load(); }, 15000);
 </script>
 </body>
 </html>

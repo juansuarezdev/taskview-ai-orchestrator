@@ -25,6 +25,7 @@ import base64, datetime, fcntl, html, json, os, re, subprocess, sys, tempfile, t
 from pathlib import Path
 
 import ia_users
+import orq_config
 
 HERE = Path(__file__).resolve().parent
 API = "http://127.0.0.1:1725"
@@ -147,11 +148,13 @@ def token(c):
 def select(tag_names, assignees, owner):
     """What to run for one task: (trigger tag, mode, runner) or None.
     tag_names: names of the task's tags; assignees: emails of its assignees; owner: the user's email.
-    Assigned to the user -> never. Needs a mode tag (packs first) AND an AI assignee, which picks the runner."""
+    Assigned to the user -> never. Needs a mode tag (packs first) AND an AI assignee, which picks the runner
+    (both AIs: CFG runner_both; nobody assigned: CFG default_runner, None by default = nothing runs)."""
     if owner and owner in assignees:
         return None
     trig = next((n for n in TRIGGERS if n in tag_names), None)
-    runner = ia_users.runner_of(assignees)
+    ais = [r for r, e in ia_users.RUNNERS.items() if e in assignees]
+    runner = (CFG["runner_both"] if CFG["runner_both"] in ais else ais[0]) if ais else (CFG["default_runner"] if not assignees else None)
     if not trig or not runner:
         return None
     return trig, TRIGGERS[trig], runner
@@ -201,6 +204,21 @@ def main():
         ok, detail, _ask = integrate_to_main(root, branch)
         print(detail)
         sys.exit(0 if ok else 1)
+    if CFG_ERRORS:  # printed in --dry-run; logged once per distinct error, not every tick
+        msg = f"orq-config.json: {CFG_ERRORS}; se usan los valores por defecto en esas claves"
+        mark = HERE / "logs/.orq-config-error"
+        if dry:
+            print(msg)
+        elif not mark.exists() or mark.read_text() != msg:
+            mark.write_text(msg)
+            log(msg)
+    if not dry and CFG["tick_secs"] > 60:  # launchd runs every 60 s; a longer interval skips ticks
+        try:
+            if time.time() - TICK_FILE.stat().st_mtime < CFG["tick_secs"] - 5:
+                return
+        except OSError:
+            pass
+        TICK_FILE.touch()
     if PAUSE_FILE.exists():  # manual pause (orq-panel.py): start nothing new; a run in progress is never touched
         if dry:
             print(f"PAUSADO desde {time.strftime('%F %T', time.localtime(PAUSE_FILE.stat().st_mtime))}: no se arrancaría nada")
@@ -234,9 +252,15 @@ def main():
         goals = goals[i + 1:] + goals[:i + 1]
     except (OSError, ValueError, StopIteration):
         pass
+    first = priority_goals(api)
+    goals = sorted(goals, key=lambda x: 0 if x["id"] in first else 1)  # stable: boards of priority cards first, rest keep the rotation
     for g in goals:
         repo = REPOS.get(g["name"])
         if not repo or g.get("archive"):
+            continue
+        if g["name"] in CFG["disabled_boards"]:
+            if dry:
+                print(f"[{g['name']}] desactivado en orq-config.json")
             continue
         gid = g["id"]
         # the endpoint ignores ?goalId and returns every goal's tags, and toggling needs the tag of the task's own goal
@@ -261,7 +285,8 @@ def main():
             cur = "null"
             while cur:
                 r = api("GET", f"/module/kanban/tasks/{gid}/{col}/{cur}")
-                for t in r["tasks"]:
+                prio = {tid: i for i, tid in enumerate(CFG["priority_tasks"])}
+                for t in sorted(r["tasks"], key=lambda x: prio.get(x["id"], len(prio))):  # stable: priority cards lead their page
                     have = set(t.get("tags") or [])
                     who = ia_users.assignee_emails(t, collab)
                     if owner in who or t.get("complete"):  # the user's own task; done tasks may keep a stale trigger tag
@@ -296,8 +321,8 @@ def main():
                         if dry:
                             print(f"[{g['name']}] t{t['id']} {mode}/{runner} base={worktree_base(repo, t.get('note')) or 'main'}: {t['description']}")
                         else:
-                            if runner == "claude" and (claude_paced() or claude_reserved(g["name"])):
-                                if mode != "exec" or not opencode_usable(g["name"]):
+                            if runner == "claude" and (claude_paced() or claude_reserved(g["name"]) or (not CFG["handoff_to_opencode"] and claude_is_limited())):
+                                if mode != "exec" or not CFG["handoff_to_opencode"] or not opencode_usable(g["name"]):
                                     continue  # held; cards of other runners further down may still start
                                 log(f"t{t['id']} pacing → runner=opencode")
                                 runner = "opencode"
@@ -1073,7 +1098,7 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
     global CURRENT_TASK, CURRENT_GOAL, RUN_ENV
     CURRENT_TASK = str(tid)
     CURRENT_GOAL = goal.get("name", "")
-    if mode == "exec" and runner == "claude" and claude_is_limited():
+    if mode == "exec" and runner == "claude" and claude_is_limited() and CFG["handoff_to_opencode"]:
         log(f"t{tid} claude en cooldown → runner=opencode")
         runner = "opencode"
     log(f"start t{tid} {mode} [{goal['name']}] {t['description']}")
@@ -1264,6 +1289,36 @@ def mail_result(api, tags, t, msg, body, done_tag):
             toggle(api, tags, t, MAIL, False)
             return
 
+
+# --- Settings editable from the orchestrator panel (orq-config.json via orq_config.py), read on every tick ---
+# Defaults = the constants above; a bad file or key keeps the default for that key and is logged once per tick.
+TICK_FILE = HERE / "logs/.last-tick"
+
+
+def apply_config(cfg):
+    global MERGE_TO_MAIN_REPOS, PRIORITY_PROJECTS, PACE_HOURS, PACE_SLACK, PACE_HARD, WEEK_SLACK, WEEK_HARD, USAGE_ALERTS, MAX_ROUNDS, BUDGET
+    MERGE_TO_MAIN_REPOS = set(cfg["merge_to_main_repos"])
+    PRIORITY_PROJECTS = list(cfg["priority_projects"])
+    PACE_HOURS, PACE_SLACK, PACE_HARD = cfg["pace_hours"], cfg["pace_slack"], cfg["pace_hard"]
+    WEEK_SLACK, WEEK_HARD = cfg["week_slack"], cfg["week_hard"]
+    USAGE_ALERTS = tuple(cfg["usage_alerts"])
+    MAX_ROUNDS = cfg["max_rounds"]
+    BUDGET = {k: format(v, "g") for k, v in cfg["budget_usd"].items()}
+
+
+def priority_goals(api):
+    """Goal ids of the priority cards (CFG priority_tasks), so their boards are visited first."""
+    out = set()
+    for tid in CFG["priority_tasks"][:10]:
+        try:
+            out.add(api("GET", f"/module/tasks/{int(tid)}")["goalId"])
+        except Exception:
+            pass  # deleted or not visible: ignored
+    return out
+
+
+CFG, CFG_ERRORS = orq_config.load()
+apply_config(CFG)
 
 if __name__ == "__main__":
     main()

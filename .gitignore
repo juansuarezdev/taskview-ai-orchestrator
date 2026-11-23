@@ -10,3 +10,5 @@ vapid/
 *.bak-*
 grokbot/
 .reserva-claude.json
+orq-config.json
+orq-config.json.tmp

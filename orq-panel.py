@@ -4,8 +4,15 @@
 Solo escucha en 127.0.0.1:8790 (Tailscale Serve lo publica en la tailnet, nunca en internet).
 Lanzado por el LaunchAgent com.example.taskview-orq-panel. Cada 30 s empuja un resumen a PhoneBox (/api/push/orquestador).
 
+Configura además: ajustes globales del despachador (orq-config.json, ver orq_config.py) y, por tarjeta, asignación a
+Claude/OpenCode, etiquetas de modo, permiso web, prioridad en la cola y relanzar. Nunca toca tarjetas con para-mí, asignadas
+a the owner o completadas, ni borra tareas. Todo cambio queda en logs/orq-panel.log.
+
 CLI:  orq-panel.py            servidor
       orq-panel.py --pause | --resume    crea / borra logs/.pausa-orquestador (lo usan los atajos de PhoneBox)
+      orq-panel.py --answer-latest TEXTO responde la pregunta más reciente (atajos de respuesta rápida de PhoneBox)
+      orq-panel.py --web-latest          concede web a la tarjeta de la pregunta más reciente y la reanuda
+      orq-panel.py --relaunch-latest     vuelve a encolar la última tarjeta en ia·fallo
       orq-panel.py --summary             imprime el resumen JSON (lo mismo que recibe PhoneBox)
 """
 import html
@@ -20,6 +27,10 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import ia_users  # noqa: E402
+import orq_config  # noqa: E402
+
 HERE = Path(__file__).resolve().parent
 PORT = 8790
 TS_HOST = "your-mac.your-tailnet.ts.net"
@@ -33,6 +44,11 @@ WEB_TASKS = HERE / "web-tasks.txt"
 PANEL_LOG = HERE / "logs/orq-panel.log"
 PHONEBOX = "http://127.0.0.1:8765"
 ESTADO = Path.home() / ".local/bin/estado-orquestador"
+MODE_TAGS = ("ia·plan", "ia·ejecutar", "ia·continuar")  # tags the panel may put or remove
+MINE_TAG = "para-mí"  # the owner's own cards: never touched from here
+WEB_ANSWER = "Permiso web concedido: puedes usar WebSearch y WebFetch. Continúa."
+DECIDE_ANSWER = "Decide tú la opción más razonable, deja anotado en la nota qué elegiste y por qué, y continúa."
+FRESH = 45  # s: a question newer than this is not answered blind from PhoneBox (the card may still show the previous one)
 AGENTS = ["com.example.taskview-ai", "com.example.taskview-supervisor", "com.example.taskview-orq-panel", "com.example.taskview-daily",
           "com.example.taskview-health", "com.example.taskview-sync", "com.example.taskview-backup", "com.example.taskview-weekly"]
 
@@ -260,7 +276,7 @@ def state():
         if root and sh(["git", "-C", str(root), "merge-base", "--is-ancestor", f"ai/t{tid}", "main"], 10)[0] in (0, 128):
             continue  # already in main (integrated later by hand) or the branch is gone
         retry.append({"id": tid, "title": title_of(tid), "board": board, "repo": repo, "branch": f"ai/t{tid}", "at": it["at"],
-                      "text": it["text"], "allowed": repo in d.MERGE_TO_MAIN_REPOS})
+                      "text": it["text"], "allowed": repo in merge_repos()})
     queue = [{"id": t["id"], "title": t["description"], "board": t.get("goalName", ""), "tags": t.get("tags", []), "ai": t.get("ai"),
               "status": t.get("status")} for t in inbox.get("queued", [])]
     try:
@@ -288,6 +304,8 @@ def state():
         "web": [{"id": int(i), "title": title_of(i)} for i in web_ids(wtext) if i.isdigit()],
         "estado": CACHE["estado"],
         "jobs": CACHE["jobs"],
+        "priority": orq_config.load()[0]["priority_tasks"],
+        "latest": latest(runs, inbox),
     }
 
 
@@ -308,7 +326,8 @@ def summary(s=None):
         "orq": {"paused": s["paused"], "running": {"id": run["id"], "title": run["title"], "board": run["board"], "elapsed": run["elapsed"],
                                                     "mode": run["mode"]} if run else None,
                 "queue": len(s["queue"]), "questions": nq, "h5": u.get("h5"), "d7": u.get("d7"), "h5_reset": u.get("h5_reset"),
-                "claude": u.get("claude"), "opencode": u.get("opencode"), "at": int(s["now"])},
+                "claude": u.get("claude"), "opencode": u.get("opencode"), "at": int(s["now"]),
+                "h5_allowed": u.get("h5_allowed"), "d7_allowed": u.get("d7_allowed"), **s["latest"]},
     }
 
 
@@ -335,10 +354,11 @@ def set_pause(on, who="panel"):
         f.write(f"{time.strftime('%F %T')} {msg}\n")
 
 
-def answer(tid, text):
+def answer(tid, text, who="panel web"):
     text = text.strip()
     if not text:
         raise ValueError("respuesta vacía")
+    guard(tid)
     inbox = api("GET", "/module/about/inbox")["response"]
     q = next((x for x in inbox.get("questions", []) if x["id"] == int(tid)), None)
     if not q:
@@ -353,23 +373,25 @@ def answer(tid, text):
     api("PATCH", "/module/tasks", {"id": int(tid), "note": f"{cur}<p>RESPUESTA: {esc}</p>"})
     if tag["id"] not in set(task.get("tags") or []):
         api("PATCH", "/module/tags/toggle", {"tagId": tag["id"], "taskId": int(tid)})
-    plog(f"respuesta t{tid} ({len(text)} car.)")
+    plog(f"respuesta t{tid} ({len(text)} car.) ({who})")
     CACHE["inbox_at"] = 0
 
 
-def web(tid, on):
+def web(tid, on, who="panel web", checked=False):
     tid = int(tid)
+    if not checked:
+        guard(tid)
     try:
         text = WEB_TASKS.read_text()
     except OSError:
         text = ""
     WEB_TASKS.write_text(web_set(text, tid, on, f"web concedido desde el panel {time.strftime('%F')}"))
-    plog(f"web t{tid} {'concedida' if on else 'retirada'}")
+    if not checked:
+        plog(f"web t{tid} {'concedida' if on else 'retirada'} ({who})")
 
 
 def integrate(repo, branch):
-    d = disp()
-    if repo not in d.MERGE_TO_MAIN_REPOS or not re.fullmatch(r"ai/t\d+", branch):
+    if repo not in merge_repos() or not re.fullmatch(r"ai/t\d+", branch):
         raise ValueError("repo o rama no permitidos")
     key = f"{repo}:{branch}"
     if CACHE["jobs"].get(key, {}).get("state") == "corriendo":
@@ -382,6 +404,247 @@ def integrate(repo, branch):
         plog(f"integrar {key}: rc={rc}")
     threading.Thread(target=go, daemon=True).start()
     plog(f"integrar {key}: lanzado")
+
+
+# ---------------------------------------------------------------- dispatcher settings (orq-config.json)
+def merge_repos():
+    return set(orq_config.load()[0]["merge_to_main_repos"])
+
+
+def goals_list():
+    """Served boards (REPOS) that are not archived: [{id, name}], cached 5 min."""
+    if time.time() - CACHE.get("goals_at", 0) > 300:
+        try:
+            CACHE["goals"] = [{"id": g["id"], "name": g["name"]} for g in api("GET", "/module/goals")["response"]
+                              if g["name"] in disp().REPOS and not g.get("archive")]
+            CACHE["goals_at"] = time.time()
+        except Exception as e:
+            plog(f"goals: {e}")
+    return CACHE.get("goals", [])
+
+
+def config_choices():
+    d = disp()
+    dflt = orq_config.DEFAULTS  # the defaults stay valid even if a repo leaves REPOS
+    return {"merge_to_main_repos": sorted(set(d.REPOS.values()) | set(dflt["merge_to_main_repos"])),
+            "disabled_boards": sorted(set(d.REPOS) | set(dflt["disabled_boards"]))}
+
+
+def config_view():
+    cfg, errors = orq_config.load()
+    return {"config": cfg, "defaults": orq_config.DEFAULTS, "errors": errors, "file": orq_config.FILE.exists(),
+            "spec": {k: [kind, list(extra) if extra else None] for k, (kind, extra) in orq_config.SPEC.items()},
+            "choices": {**config_choices(), "priority_projects": goals_list()}}
+
+
+def save_config(new, who="panel web"):
+    """Validate and write; raises ValueError with every bad key. Logs old -> new of each changed key."""
+    cfg, errors = orq_config.validate(new, config_choices())
+    if errors:
+        raise ValueError("; ".join(f"{k}: {v}" for k, v in errors.items()))
+    old = orq_config.load()[0]
+    orq_config.save(cfg)
+    changed = [f"{k} {json.dumps(old[k], ensure_ascii=False)} -> {json.dumps(cfg[k], ensure_ascii=False)}" for k in cfg if old[k] != cfg[k]]
+    plog(f"config ({who}): " + ("; ".join(changed) or "sin cambios"))
+    CACHE["dry_at"] = CACHE["usage_at"] = 0  # the dry-run and the pacing figures depend on it
+    return changed
+
+
+# ---------------------------------------------------------------- per-card actions
+def _api_r(m, p, b=None):
+    return api(m, p, b)["response"]
+
+
+def tag_ids(gid):
+    """{tag name: id} of one project (the endpoint returns every project's tags)."""
+    return {t["name"]: t["id"] for t in _api_r("GET", "/module/tags") if t["goalId"] == gid}
+
+
+def lock_reason(tag_names, emails, owner, complete):
+    """Why the panel must not touch a card, or None."""
+    if MINE_TAG in tag_names:
+        return "tiene la etiqueta para-mí"
+    if not owner:
+        return "falta el email de the owner en ia-users.json"
+    if owner in emails:
+        return "está asignada a the owner"
+    if complete:
+        return "está completada"
+    return None
+
+
+def owner():
+    """the owner's email as ai-dispatch.py resolves it: ia-users.json owner, else the email line of .credentials (only that line)."""
+    if "owner" not in CACHE:
+        try:
+            email = next((l.split("=", 1)[1] for l in (HERE / ".credentials").read_text().splitlines() if l.startswith("email=")), "")
+        except OSError:
+            email = ""
+        CACHE["owner"] = ia_users.owner_email({"email": email})
+    return CACHE["owner"]
+
+
+def _card(tid):
+    tid = int(tid)
+    t = _api_r("GET", f"/module/tasks/{tid}")
+    gid = t["goalId"]
+    tags = tag_ids(gid)
+    names = {v: k for k, v in tags.items()}
+    collab = ia_users.collaborators(_api_r, gid)
+    emails = ia_users.assignee_emails(t, collab)
+    tnames = sorted(names[i] for i in (t.get("tags") or []) if i in names)
+    try:
+        web_on = str(tid) in web_ids(WEB_TASKS.read_text())
+    except OSError:
+        web_on = False
+    prio = orq_config.load()[0]["priority_tasks"]
+    board = next((g["name"] for g in goals_list() if g["id"] == gid), "")
+    view = {"id": tid, "title": t.get("description", ""), "goalId": gid, "board": board, "tags": tnames,
+            "runners": [r for r, e in ia_users.RUNNERS.items() if e in emails],
+            "others": len([e for e in emails if e not in ia_users.RUNNER_BY_EMAIL]),
+            "ai_collab": {r: e in collab.values() for r, e in ia_users.RUNNERS.items()},
+            "mode_tags": {n: n in tags for n in MODE_TAGS}, "web": web_on,
+            "priority": prio.index(tid) + 1 if tid in prio else None, "served": board in disp().REPOS,
+            "locked": lock_reason(set(tnames), emails, owner(), t.get("complete"))}
+    return view, t, collab, tags
+
+
+def card(tid):
+    return _card(tid)[0]
+
+
+def guard(tid):
+    view = card(tid)
+    if view["locked"]:
+        raise ValueError(f"t{view['id']} no se toca: {view['locked']}")
+    return view
+
+
+def last_mode(tid):
+    runs, _ = parse_log(tail_lines(LOG))
+    return next((r["mode"] for r in reversed(runs) if r["id"] == int(tid)), None)
+
+
+def task_op(tid, op, b, who="panel web"):
+    """One change on one card. Refuses locked cards (para-mí, the owner's, done). Returns the new card view."""
+    view, t, collab, tags = _card(tid)
+    tid = view["id"]
+    if view["locked"]:
+        raise ValueError(f"t{tid} no se toca: {view['locked']}")
+    if op == "assign":
+        runner, on = str(b.get("runner")), bool(b.get("on"))
+        email = ia_users.RUNNERS.get(runner)
+        cid = next((i for i, e in collab.items() if e == email), None) if email else None
+        if cid is None:
+            raise ValueError(f"{runner} no colabora en {view['board'] or 'ese proyecto'}")
+        ids = [i for i in (t.get("assignedUsers") or []) if i != cid] + ([cid] if on else [])
+        _api_r("PATCH", "/module/tasks/task-users", {"taskId": tid, "userIds": ids})
+        msg = f"{'asignada a' if on else 'desasignada de'} {runner}"
+    elif op == "tag":
+        name, on = str(b.get("name")), bool(b.get("on"))
+        if name not in MODE_TAGS:
+            raise ValueError("etiqueta no permitida")
+        if name not in tags:
+            raise ValueError(f"{name} no existe en {view['board'] or 'ese proyecto'}")
+        if (name in view["tags"]) != on:
+            _api_r("PATCH", "/module/tags/toggle", {"tagId": tags[name], "taskId": tid})
+        msg = f"{'pone' if on else 'quita'} {name}"
+    elif op == "web":
+        web(tid, bool(b.get("on")), checked=True)
+        msg = f"web {'concedida' if b.get('on') else 'retirada'}"
+    elif op == "priority":
+        move = str(b.get("move"))
+        cfg = orq_config.load()[0]
+        lst = [x for x in cfg["priority_tasks"] if x != tid]
+        i = view["priority"] - 1 if view["priority"] else None
+        if move == "top":
+            lst.insert(0, tid)
+        elif move == "up" and i is not None:
+            lst.insert(max(0, i - 1), tid)
+        elif move == "down" and i is not None:
+            lst.insert(min(len(lst), i + 1), tid)
+        elif move != "remove":
+            raise ValueError("movimiento no válido")
+        save_config({**cfg, "priority_tasks": lst}, who)
+        msg = f"prioridad {move}"
+    elif op == "relaunch":
+        if "ia·trabajando" in view["tags"]:
+            raise ValueError("está en curso")
+        if any(n in view["tags"] for n in ("ia·plan", "ia·ejecutar")):
+            raise ValueError("ya está encolada")
+        if not view["runners"]:
+            raise ValueError("no tiene IA asignada: asígnala primero")
+        name = "ia·plan" if (b.get("mode") or last_mode(tid)) == "plan" else "ia·ejecutar"
+        if name not in tags:
+            raise ValueError(f"{name} no existe en ese proyecto")
+        _api_r("PATCH", "/module/tags/toggle", {"tagId": tags[name], "taskId": tid})
+        msg = f"relanzada con {name}"
+    else:
+        raise ValueError("acción desconocida")
+    plog(f"t{tid} {msg} ({who})")
+    CACHE["inbox_at"] = CACHE["dry_at"] = 0
+    return card(tid)
+
+
+# ---------------------------------------------------------------- quick actions (PhoneBox shortcuts)
+def latest(runs, inbox):
+    """Most recent question and most recent failed run still worth relaunching (from the log), for the quick actions."""
+    seen = {}
+    for r in runs:
+        seen[r["id"]] = r["end"] or r["start"]
+    qs = inbox.get("questions", [])
+    q = max(qs, key=lambda x: (seen.get(x["id"], 0), x["id"]), default=None)
+    try:
+        wids = set(web_ids(WEB_TASKS.read_text()))
+    except OSError:
+        wids = set()
+    fail = None
+    last_by_id = {}
+    for r in runs:
+        last_by_id[r["id"]] = r
+    for r in reversed(runs):
+        if r["result"] == "ia·fallo" and last_by_id[r["id"]] is r and time.time() - (r["end"] or 0) < 3 * 86400:
+            fail = {"id": r["id"], "title": r["title"], "board": r["board"], "mode": r["mode"]}
+            break
+    return {"question": {"id": q["id"], "title": q["description"], "board": q.get("goalName", ""), "web": str(q["id"]) in wids,
+                         "at": seen.get(q["id"]),
+                         "text": question_text(q.get("noteTail"))[:280]} if q else None,
+            "relaunch": fail}
+
+
+def _latest():
+    runs, _ = parse_log(tail_lines(LOG))
+    return latest(runs, _api_r("GET", "/module/about/inbox"))
+
+
+def _fresh_question(who):
+    q = _latest()["question"]
+    if not q:
+        raise ValueError("no hay preguntas pendientes")
+    if who == "PhoneBox" and q.get("at") and time.time() - q["at"] < FRESH:
+        raise ValueError(f"t{q['id']} acaba de preguntar; revisa la tarjeta y vuelve a tocar")
+    return q
+
+
+def answer_latest(text, who="PhoneBox"):
+    q = _fresh_question(who)
+    answer(q["id"], text.strip() or DECIDE_ANSWER, who)
+    return f"t{q['id']} respondida"
+
+
+def web_latest(who="PhoneBox"):
+    q = _fresh_question(who)
+    web(q["id"], True, who=who)
+    answer(q["id"], WEB_ANSWER, who)
+    return f"t{q['id']}: web concedida y reanudada"
+
+
+def relaunch_latest(who="PhoneBox"):
+    f = _latest()["relaunch"]
+    if not f:
+        raise ValueError("no hay tarjetas en ia·fallo recientes")
+    task_op(f["id"], "relaunch", {"mode": f["mode"]}, who)
+    return f"t{f['id']} relanzada"
 
 
 # ---------------------------------------------------------------- HTTP
@@ -413,6 +676,13 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, state())
         if self.path == "/api/summary":
             return self._send(200, summary())
+        if self.path == "/api/config":
+            return self._send(200, config_view())
+        if m := re.fullmatch(r"/api/task/(\d{1,9})", self.path):
+            try:
+                return self._send(200, card(m[1]))
+            except Exception as e:
+                return self._send(404, {"error": f"no se pudo leer t{m[1]}: {e}"})
         self._send(404, {"error": "no existe"})
 
     def do_POST(self):
@@ -431,6 +701,18 @@ class H(BaseHTTPRequestHandler):
                 web(b["id"], bool(b.get("on")))
             elif p == "/api/integrate":
                 integrate(str(b["repo"]), str(b["branch"]))
+            elif p == "/api/config":
+                changed = save_config(b["config"])
+                return self._send(200, {"ok": True, "changed": changed, "config": config_view()})
+            elif p == "/api/task":
+                c = task_op(b["id"], str(b["op"]), b)
+                return self._send(200, {"ok": True, "card": c})
+            elif p == "/api/quick":
+                fn = {"answer": lambda: answer_latest(str(b.get("text", ""))[:4000], "panel web"), "web": lambda: web_latest("panel web"),
+                      "relaunch": lambda: relaunch_latest("panel web")}.get(str(b.get("op")))
+                if not fn:
+                    return self._send(404, {"error": "no existe"})
+                fn()
             else:
                 return self._send(404, {"error": "no existe"})
             s = state()
@@ -458,6 +740,20 @@ def main():
         set_pause("--pause" in a, "PhoneBox" if "--phonebox" in a else "terminal")
         push_phonebox()
         return
+    who = "PhoneBox" if "--phonebox" in a else "terminal"
+    quick = {"--answer-latest": lambda: answer_latest(" ".join(x for x in a if not x.startswith("--")), who),
+             "--web-latest": lambda: web_latest(who), "--relaunch-latest": lambda: relaunch_latest(who)}
+    for flag, fn in quick.items():
+        if flag in a:
+            try:
+                print(fn())
+            except (ValueError, KeyError) as e:
+                plog(f"{flag} ({who}) rechazado: {e}")
+                print(f"no: {e}", file=sys.stderr)
+                sys.exit(1)
+            finally:
+                push_phonebox()
+            return
     if "--summary" in a:
         print(json.dumps(summary(), ensure_ascii=False, indent=1))
         return
