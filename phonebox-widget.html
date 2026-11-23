@@ -1,0 +1,61 @@
+<style>
+  body{padding:3.5vh 4vw;box-sizing:border-box;display:flex;flex-direction:column;gap:2.5vh;font-size:6.2vh}
+  .hd{display:flex;align-items:center;gap:2vw}
+  .hd b{font-size:7vh;letter-spacing:.02em}
+  .dot{width:2.6vh;height:2.6vh;border-radius:50%;background:#4cc584}
+  .dot.run{background:#6b9cf5;animation:p 1.6s infinite}.dot.pause{background:#e9a84a}.dot.off{background:#6b7280}
+  @keyframes p{50%{opacity:.3}}
+  .st{color:#8a94a3;margin-left:auto;font-size:5.4vh}
+  .task{font-size:6.6vh;font-weight:600;line-height:1.2;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+  .task small{display:block;color:#8a94a3;font-weight:400;font-size:5vh;margin-top:.6vh}
+  .nums{display:grid;grid-template-columns:repeat(3,1fr);gap:2vw;margin-top:auto}
+  .n{background:rgba(255,255,255,.06);border-radius:2vh;padding:1.6vh 2vw}
+  .n b{display:block;font-size:10vh;font-weight:700;line-height:1.1}
+  .n span{color:#8a94a3;font-size:4.6vh}
+  .n.warn b{color:#e9a84a}
+  .bar{height:1.3vh;background:rgba(255,255,255,.1);border-radius:1vh;margin-top:.8vh;overflow:hidden}
+  .bar i{display:block;height:100%;background:#6b9cf5}
+  button{font:inherit;font-weight:600;font-size:5.6vh;border:0;border-radius:2vh;padding:2.2vh 3vw;background:rgba(255,255,255,.1);color:#eef2f6}
+  button.ask{background:#e9a84a;color:#1a1205}
+  button.res{background:#4cc584;color:#06210f}
+</style>
+<div class="hd"><span class="dot off" id="dot"></span><b>Orquestador</b><span class="st" id="st">sin datos</span></div>
+<div class="task" id="task">Esperando al panel…</div>
+<div class="nums">
+  <div class="n" id="nq"><b id="q">–</b><span>en cola</span></div>
+  <div class="n" id="np"><b id="p">–</b><span>preguntas</span></div>
+  <div class="n"><b id="u" style="font-size:7.4vh;padding-top:1.3vh">–</b><span id="us">5 h / semana</span><div class="bar"><i id="ub" style="width:0"></i></div></div>
+</div>
+<button id="btn">Pausar</button>
+<script>
+  var S = null, armed = 0;
+  function $(i){return document.getElementById(i)}
+  function render(){
+    var o = S && S.orq; if (!o) return;
+    var stale = Date.now()/1000 - o.at > 180;
+    $('dot').className = 'dot ' + (stale ? 'off' : o.paused ? 'pause' : o.running ? 'run' : '');
+    $('st').textContent = stale ? 'sin datos' : o.paused ? 'en pausa' : o.running ? Math.floor(o.running.elapsed/60) + ' min' : 'libre';
+    $('task').innerHTML = '';
+    if (o.running) { $('task').textContent = 't' + o.running.id + ' · ' + o.running.title; var s = document.createElement('small'); s.textContent = o.running.board; $('task').appendChild(s); }
+    else $('task').textContent = o.paused ? 'En pausa: no arranca nada nuevo' : 'Sin tarea en curso';
+    $('q').textContent = o.queue; $('p').textContent = o.questions;
+    $('np').className = 'n' + (o.questions ? ' warn' : '');
+    $('u').textContent = (o.h5 == null ? '?' : o.h5) + '% · ' + (o.d7 == null ? '?' : o.d7) + '%';
+    $('ub').style.width = Math.min(100, o.h5 || 0) + '%';
+    $('ub').style.background = o.h5 >= 90 ? '#f07068' : o.h5 >= 70 ? '#e9a84a' : '#6b9cf5';
+    if (!armed) { $('btn').textContent = o.paused ? 'Reanudar' : 'Pausar'; $('btn').className = o.paused ? 'res' : ''; }
+  }
+  phonebox.on('push', function(p){ var it = p && p.orquestador; if (it) { S = it.data || it; render(); } });
+  $('btn').onclick = function(){
+    if (!S || !S.orq) return;
+    var paused = S.orq.paused;
+    if (!armed) {  // first tap arms, second tap within 4 s confirms
+      armed = setTimeout(function(){ armed = 0; render(); }, 4000);
+      $('btn').textContent = paused ? '¿Reanudar? Toca otra vez' : '¿Pausar? Toca otra vez'; $('btn').className = 'ask';
+      return;
+    }
+    clearTimeout(armed); armed = 0;
+    phonebox.run(paused ? 'orq-reanudar' : 'orq-pausar');
+    $('btn').textContent = 'Enviado…';
+  };
+</script>

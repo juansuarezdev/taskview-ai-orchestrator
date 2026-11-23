@@ -158,6 +158,7 @@ def select(tag_names, assignees, owner):
 
 
 LAST_GOAL_FILE = HERE / "logs/.last-goal"  # board of the last card started (round-robin across boards)
+PAUSE_FILE = HERE / "logs/.pausa-orquestador"  # while it exists no new card starts (set from the panel, orq-panel.py)
 
 
 def mark_goal(gid):
@@ -200,6 +201,10 @@ def main():
         ok, detail, _ask = integrate_to_main(root, branch)
         print(detail)
         sys.exit(0 if ok else 1)
+    if PAUSE_FILE.exists():  # manual pause (orq-panel.py): start nothing new; a run in progress is never touched
+        if dry:
+            print(f"PAUSADO desde {time.strftime('%F %T', time.localtime(PAUSE_FILE.stat().st_mtime))}: no se arrancaría nada")
+        return
     # Pausa: Claude en cooldown y OpenCode/reserva agotados (opencode_exhausted) -> no arrancar nada (evita quemar tarjetas a ia·fallo)
     if not dry:
         paid_release_check()
