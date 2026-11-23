@@ -11,26 +11,39 @@
   },
   "board_base": {},
   "main_test_cmd": {
-    "my-app": ["bash", "scripts/test.sh"]
+    "my-app": [
+      "bash",
+      "scripts/test.sh"
+    ]
   },
   "laravel_docker_test": {},
   "test_env_repos": [],
   "repo_extra_bash": {
-    "website": ["docker compose", "docker ps", "docker logs"]
+    "website": [
+      "docker compose",
+      "docker ps",
+      "docker logs"
+    ]
   },
   "repo_bash_all": [],
   "repo_extra_denied": {},
-  "sensitive_boards": ["Client*"],
+  "sensitive_boards": [
+    "Client*"
+  ],
   "github_owner": "your-github-user",
   "github_repo_boards": {
     "my-app": "My App"
   },
-  "clean_repos": ["my-app", "website"],
+  "clean_repos": [
+    "my-app",
+    "website"
+  ],
   "tailnet_host": "",
   "tailnet_port": 8455,
   "health_host": "",
   "event_log_cmd": "",
   "launchd_prefix": "com.example",
   "supervisor_repos": [],
-  "local_delegate_usage": ""
+  "local_delegate_usage": "",
+  "integrate_strip_env": []
 }

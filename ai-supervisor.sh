@@ -59,7 +59,7 @@ READ_TOOLS=(Read Glob Grep mcp__taskview__list_goals mcp__taskview__list_tasks m
   mcp__taskview__list_lists $(r tail ls wc grep ps pgrep "rtk read" "rtk tail" "rtk ls" "rtk wc" "rtk grep" "rtk ps" "rtk pgrep" \
   ${GIT_READ[@]+"${GIT_READ[@]}"}))
 WRITE_TOOLS=(mcp__taskview__update_task mcp__taskview__toggle_task_tag mcp__taskview__toggle_task_assignees)
-DENIED=(Write Edit MultiEdit NotebookEdit WebFetch WebSearch Task Agent mcp__supabase mcp__local-model mcp__engram mcp__plugin_engram_engram
+DENIED=(Write Edit MultiEdit NotebookEdit WebFetch WebSearch Task Agent mcp__supabase mcp__engram mcp__plugin_engram_engram
   mcp__taskview__delete_task mcp__taskview__delete_tag mcp__taskview__delete_goal mcp__taskview__delete_list mcp__taskview__delete_kanban_column
   mcp__taskview__delete_task_dependency mcp__taskview__create_task mcp__taskview__create_goal mcp__taskview__restore_task_from_history
   "Read(**/.credentials*)" "Read(**/.api-token)" "Read(**/.env*)" "Read(~/.claude.json)" "Read(~/.claude/.credentials.json)"

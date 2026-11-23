@@ -1127,7 +1127,7 @@ def integrate_to_main(repo_dir, branch, tid=None):
     else:
         log(f"{label}integrar main: {branch} ya está contenida en main")
 
-    env = {k: v for k, v in os.environ.items() if k not in ("APP_DB", "APP_MODEL")}
+    env = {k: v for k, v in os.environ.items() if k not in SITE["integrate_strip_env"]}  # app env that must not leak into main's tests
     env["PATH"] = f"{Path.home()}/.local/bin:/opt/homebrew/bin:/usr/local/bin:{env.get('PATH', '')}"  # docker lives in ~/.local/bin
     test_cmd = main_test_cmd(repo_dir)
     tname = ("php artisan test (docker sail-8.5)" if test_cmd[0] == "docker" else " ".join(test_cmd)) if test_cmd else "sin tests"

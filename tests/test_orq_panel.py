@@ -14,7 +14,7 @@ spec = importlib.util.spec_from_file_location("orq_panel", Path(__file__).resolv
 P = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(P)
 
-LOG = """2026-11-23 12:01:43 start t442 exec [Project Board N] QA: XCUITest
+LOG = """2026-11-23 12:01:43 start t442 exec [Board A] QA: XCUITest
 2026-11-23 12:25:58 usage t442 exec claude-sonnet-5-5 cost=$2.25 5h=23% 7d=9%
 2026-11-23 12:26:30 usage t442 review claude-sonnet-5-5 cost=$0.27 5h=24% 7d=9%
 2026-11-23 12:30:00 t442 integrar main: main no está limpio; no se mergea

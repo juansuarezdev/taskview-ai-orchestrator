@@ -44,6 +44,7 @@ DEFAULTS = {
     "launchd_prefix": "com.example",  # LaunchAgent labels are <prefix>.taskview-<name>
     "supervisor_repos": [],        # ai-supervisor.sh: repos the supervisor session may inspect with read-only git
     "local_delegate_usage": "",    # weekly.py: optional usage.jsonl of a local model delegate ("" = skip)
+    "integrate_strip_env": [],     # env vars removed before running a repo's tests on main
 }
 ENV = {"mail_to": "ORQ_MAIL_TO", "code_root": "ORQ_CODE_ROOT", "tailnet_host": "ORQ_TS_HOST", "health_host": "ORQ_HEALTH_HOST",
        "github_owner": "ORQ_GITHUB_OWNER", "event_log_cmd": "ORQ_EVENT_LOG_CMD", "launchd_prefix": "ORQ_LABEL_PREFIX"}

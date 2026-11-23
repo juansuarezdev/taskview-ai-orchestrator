@@ -9,7 +9,7 @@ import json, subprocess, sys, urllib.request
 from pathlib import Path
 
 API = "http://127.0.0.1:1725"
-NATIVE = "taskview://"  # the Mac banner opens the native TaskView app (~/Applications, repo repo-tm) at this path
+NATIVE = "taskview://"  # the Mac banner opens the native TaskView app (~/Applications) at this path
 TOKEN = Path(__file__).with_name(".api-token")
 BANNER = Path(__file__).with_name("mac-notifier") / "TaskViewNotify.app/Contents/MacOS/TaskViewNotify"
 
