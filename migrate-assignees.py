@@ -34,7 +34,7 @@ def call(method, path, body=None, tok=None):
 
 
 def token(c):
-    """Scoped API token (selfhost/.api-token) when present, else the password login. Never printed."""
+    """Scoped API token (.api-token) when present, else the password login. Never printed."""
     f = HERE / ".api-token"
     return f.read_text().strip() if f.exists() else call("POST", "/module/auth/login", {"login": c["login"], "password": c["password"]})["access"]
 

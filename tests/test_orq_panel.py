@@ -6,6 +6,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+import os as _os2, tempfile as _tf2; _os2.environ.setdefault("ORQ_SITE_FILE", str(Path(_tf2.mkdtemp()) / "orq-site.json"))  # never the real site file
 
 TMP = Path(tempfile.mkdtemp())
 os.environ["ORQ_CONFIG_FILE"] = str(TMP / "orq-config.json")  # never the real file
@@ -20,7 +21,7 @@ LOG = """2026-11-23 12:01:43 start t442 exec [Project Board N] QA: XCUITest
 2026-11-23 13:06:30 end t442 ok=False ia·fallo runner=claude model=claude-sonnet-5-5 secs=3886
 2026-11-23 13:10:00 t441 integrar main: tests (npm) rc=0 :: ok
 2026-11-23 13:10:05 t441 integrar main: ai/t441 en main (53a87f6) y push a origin/main
-2026-11-23 14:00:00 start t443 plan [Board V] Otra
+2026-11-23 14:00:00 start t443 plan [Board B] Otra
 garbage line
 """
 
@@ -51,7 +52,7 @@ class T(unittest.TestCase):
         self.assertEqual((u["claude"], u["opencode"]), ("no cooldown", "exhausted"))
 
     def test_dry(self):
-        rows = P.parse_dry("[Board N] t444 espera: la rama base ai/t443 aún no existe\n[Board V] t5 exec/claude base=main: Título\n[Home] sin columnas")
+        rows = P.parse_dry("[Board A] t444 espera: la rama base ai/t443 aún no existe\n[Board B] t5 exec/claude base=main: Título\n[Home] sin columnas")
         self.assertEqual([(r["id"], r["kind"]) for r in rows], [(444, "espera"), (5, "lista"), (None, "aviso")])
 
     def test_question(self):
@@ -100,7 +101,7 @@ class Ops(unittest.TestCase):
         return fake
 
     def test_locked_cards_are_never_touched(self):
-        for kw, why in ((dict(tags=["para-mí"]), "para-mí"), (dict(assigned=[9, 26]), "the owner"), (dict(complete=True), "completada")):
+        for kw, why in ((dict(tags=["para-mí"]), "para-mí"), (dict(assigned=[9, 26]), "dueño"), (dict(complete=True), "completada")):
             f = self.use(FakeAPI(**kw))
             for op, b in (("tag", {"name": "ia·plan", "on": True}), ("assign", {"runner": "opencode", "on": True}), ("web", {"on": True}),
                           ("relaunch", {}), ("priority", {"move": "top"})):
@@ -111,7 +112,7 @@ class Ops(unittest.TestCase):
             with self.assertRaises(ValueError):
                 P.web(10, True)
             self.assertEqual(P.WEB_TASKS.read_text(), "")
-        self.assertEqual(P.lock_reason(set(), set(), "", False), "falta el email de the owner en ia-users.json")
+        self.assertEqual(P.lock_reason(set(), set(), "", False), "falta el email del dueño en ia-users.json")
 
     def test_assign_and_tags(self):
         f = self.use(FakeAPI(tags=["ia·fallo"]))

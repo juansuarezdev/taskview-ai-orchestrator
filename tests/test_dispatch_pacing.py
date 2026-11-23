@@ -1,6 +1,7 @@
-"""Usage pacing of ai-dispatch.py: snapshot parsing, the pacing line and the statusline merge. Run: python3 selfhost/tests/test_dispatch_pacing.py"""
+"""Usage pacing of ai-dispatch.py: snapshot parsing, the pacing line and the statusline merge. Run: python3 tests/test_dispatch_pacing.py"""
 import importlib.util, json, os, sys, tempfile, time
 from pathlib import Path
+import os as _os2, tempfile as _tf2; _os2.environ.setdefault("ORQ_SITE_FILE", str(Path(_tf2.mkdtemp()) / "orq-site.json"))  # never the real site file
 import os as _os, tempfile as _tf; _os.environ.setdefault("ORQ_CONFIG_FILE", str(Path(_tf.mkdtemp()) / "orq-config.json"))  # never the real file
 
 HERE = Path(__file__).resolve().parent.parent
@@ -83,15 +84,15 @@ with tempfile.TemporaryDirectory() as tmp:
     tmp = Path(tmp)
     d.ALERT_FILE, d._OC_FREE_FILE, d.FREE_STATE = tmp / "agotado.json", tmp / "free", tmp / "free-state.json"
     d.LOG = tmp / "dispatch.log"  # keep test lines out of the real dispatcher log
-    d._OC_SENSITIVE_FILE = tmp / "sensitive"; d._OC_SENSITIVE_FILE.write_text("Board V\n")
+    d._OC_SENSITIVE_FILE = tmp / "sensitive"; d._OC_SENSITIVE_FILE.write_text("Private*\n")
     sent = []
     d.notify = lambda title, body, prio="3": sent.append(title)
     t0 = 1794882365.0
     d._OC_FREE_FILE.write_text("opencode/deepseek-v4.1-flash-free\n")
-    assert d.free_model_for("Board H") == "opencode/deepseek-v4.1-flash-free" and d.free_model_for("Board V") == ""
-    assert d.opencode_usable("Board H", t0) and d.opencode_usable("Board V", t0)  # Go not exhausted: everyone uses Go
+    assert d.free_model_for("Side Project") == "opencode/deepseek-v4.1-flash-free" and d.free_model_for("Private Client") == ""
+    assert d.opencode_usable("Side Project", t0) and d.opencode_usable("Private Client", t0)  # Go not exhausted: everyone uses Go
     d.ALERT_FILE.write_text(json.dumps({"ts": t0, "last_event": t0, "error": "(out of its allowance: not asked again before Nov 25 02:26 UTC+0)"}))
-    assert d.opencode_usable("Board H", t0 + 3600) and not d.opencode_usable("Board V", t0 + 3600)
+    assert d.opencode_usable("Side Project", t0 + 3600) and not d.opencode_usable("Private Client", t0 + 3600)
     d.enter_free_mode("opencode/deepseek-v4.1-flash-free", t0 + 3600)
     d.enter_free_mode("opencode/deepseek-v4.1-flash-free", t0 + 7200)  # only once per exhaustion
     assert len(sent) == 1 and d.FREE_STATE.exists()
@@ -102,19 +103,19 @@ with tempfile.TemporaryDirectory() as tmp:
     d.paid_release_check(t0 + 9 * 86400)
     assert len(sent) == 2
     d._OC_FREE_FILE.write_text("")
-    assert not d.opencode_usable("Board H", t0 + 3600)  # no free model configured: nothing usable while Go is out
+    assert not d.opencode_usable("Side Project", t0 + 3600)  # no free model configured: nothing usable while Go is out
 # Reservations: inside a window Claude only runs for the boards in "solo"; outside it, no effect.
 with tempfile.TemporaryDirectory() as tmp:
     d.RESERVE_FILE = Path(tmp) / "reserva.json"
     assert d.claude_reserved("X", now) == ""  # no file
     t = lambda s: time.mktime(time.strptime(s, "%Y-%m-%d %H:%M"))
     d.RESERVE_FILE.write_text(json.dumps([{"desde": "2026-11-19 10:00", "hasta": "2026-11-19 15:00", "solo": []},
-                                          {"desde": "2026-11-19 15:00", "hasta": "2026-11-20 00:00", "solo": ["Board C"], "motivo": "tarde SiteApp"}]))
-    assert d.claude_reserved("Board S", t("2026-11-19 09:59")) == ""
-    assert d.claude_reserved("Board C", t("2026-11-19 12:00"))  # morning: nobody
-    assert d.claude_reserved("Board S", t("2026-11-19 16:00")) == "tarde SiteApp"
-    assert d.claude_reserved("Board C", t("2026-11-19 16:00")) == ""
-    assert d.claude_reserved("Board S", t("2026-11-20 00:00")) == ""
+                                          {"desde": "2026-11-19 15:00", "hasta": "2026-11-20 00:00", "solo": ["Client App"], "motivo": "tarde Client App"}]))
+    assert d.claude_reserved("Other Board", t("2026-11-19 09:59")) == ""
+    assert d.claude_reserved("Client App", t("2026-11-19 12:00"))  # morning: nobody
+    assert d.claude_reserved("Other Board", t("2026-11-19 16:00")) == "tarde Client App"
+    assert d.claude_reserved("Client App", t("2026-11-19 16:00")) == ""
+    assert d.claude_reserved("Other Board", t("2026-11-20 00:00")) == ""
     d.RESERVE_FILE.write_text("not json")
     assert d.claude_reserved("X", now) == ""
 print(f"ok: {len(cases)} pacing cases, parsing, statusline merge")

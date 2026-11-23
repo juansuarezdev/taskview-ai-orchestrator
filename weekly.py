@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Weekly review, sent by email and as a notification on Sunday evening (launchd com.example.taskview-weekly).
+"""Weekly review, sent by email and as a notification on Sunday evening (launchd <prefix>.taskview-weekly).
 
-Read-only: queries Postgres through `docker exec` and parses selfhost/logs/ai-dispatch.log.
+Read-only: queries Postgres through `docker exec` and parses logs/ai-dispatch.log.
 - Closed this week per project, split own (assigned to the user) vs. the rest.
 - Stuck: Review or AI-question cards untouched for 7+ days.
 - AI runs of the last 7 days and the question rate.
@@ -13,9 +13,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import ia_users
+import orq_site
 
 HERE = Path(__file__).resolve().parent
-MAIL_TO = "you@example.com"
+MAIL_TO = orq_site.SITE["mail_to"]
 HIMALAYA_DIR = "/opt/homebrew/bin"
 DOCKER = "/usr/local/bin/docker" if Path("/usr/local/bin/docker").exists() else "/opt/homebrew/bin/docker"
 BASELINE_ASK_RATE = 9 / 23
@@ -92,9 +93,9 @@ def ai_runs():
 
 
 def local_usage():
-    """local-model calls in the last 7 days from its usage.jsonl."""
-    f = Path.home() / "Projects/code/local-model/usage.jsonl"
-    if not f.exists():
+    """Local model delegate calls in the last 7 days from its usage.jsonl (orq-site.json local_delegate_usage)."""
+    f = orq_site.path(orq_site.SITE["local_delegate_usage"]) if orq_site.SITE["local_delegate_usage"] else None
+    if not f or not f.exists():
         return ""
     since, rows = time.time() - 7 * 86400, []
     for line in f.read_text(errors="replace").splitlines():
@@ -163,6 +164,8 @@ def main():
     summary, body = build()
     title = f"Resumen semanal: {summary}"
     subprocess.run([sys.executable, str(HERE / "notify.py"), title, body[:700], "3"])
+    if not MAIL_TO:
+        return  # no mail_to in orq-site.json / ORQ_MAIL_TO: notification only
     env = {**os.environ, "PATH": f"{HIMALAYA_DIR}:{os.environ.get('PATH', '')}"}
     p = subprocess.run([str(Path.home() / ".local/bin/send-mail"), "--to", MAIL_TO, "--subject", f"TaskView: {title}", "--text", body],
                        capture_output=True, text=True, env=env)

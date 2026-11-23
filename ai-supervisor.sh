@@ -1,9 +1,10 @@
 #!/bin/bash
-# Supervisor de Board B (goal 29) y Board V (goal 30): cada 15 min (launchd com.example.taskview-supervisor)
+# Supervisor opcional de uno o varios tableros: cada 15 min (launchd <prefijo>.taskview-supervisor)
 # lanza una sesión `claude -p` (sonnet) que revisa las tarjetas y re-encola las paradas siguiendo el flujo de ai-dispatch.py.
-# No programa: solo TaskView MCP + lectura. Prompt: ai-supervisor-prompt.md. Log: logs/ai-supervisor.log.
+# No programa: solo TaskView MCP + lectura. Prompt: ai-supervisor-prompt.md (local, sin versionar; plantilla en
+# examples/ai-supervisor-prompt.example.md). Repos que puede leer con git: supervisor_repos de orq-site.json. Log: logs/ai-supervisor.log.
 # --dry-run: la sesión solo lee y cuenta lo que haría (sin herramientas de escritura, sin avisos).
-# Para: launchctl bootout gui/$(id -u)/com.example.taskview-supervisor   ·   Fin automático: logs/.supervisor-completado
+# Para: launchctl bootout gui/$(id -u)/<prefijo>.taskview-supervisor   ·   Fin automático: logs/.supervisor-completado
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 LOGS="$HERE/logs"
@@ -20,6 +21,7 @@ DRY=0; [ "${1:-}" = "--dry-run" ] && DRY=1
 log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
 
 [ -f "$DONE" ] && exit 0  # everything finished: never launch Claude again
+[ -f "$HERE/ai-supervisor-prompt.md" ] || [ -n "${SUP_PRINT_TOOLS:-}" ] || exit 0  # no local prompt: the supervisor is not set up
 [ -f "$LOGS/.pausa-orquestador" ] && exit 0  # manual pause from the panel (orq-panel.py)
 now=$(date +%s)
 for f in "$CLAUDE_LIMIT" "$SUP_LIMIT"; do
@@ -49,12 +51,13 @@ fi
 
 r() { for c in "$@"; do printf '%s\n' "Bash($c:*)"; done; }
 set -f; OLD_IFS="$IFS"; IFS=$'\n'  # $(r …) yields one rule per line; no globbing of the `*`
-BM="$HOME/Projects/code/repo-b"; VO="$HOME/Projects/code/repo-v"
+CODE_ROOT="$(/usr/bin/python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import orq_site; print(orq_site.CODE)' "$HERE")"
+SUP_REPOS=($(/usr/bin/python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import orq_site; print("\n".join(str(orq_site.CODE / r) for r in orq_site.SITE["supervisor_repos"]))' "$HERE"))
+GIT_READ=(); for d in ${SUP_REPOS[@]+"${SUP_REPOS[@]}"}; do for c in log branch status; do GIT_READ+=("git -C $d $c" "rtk git -C $d $c"); done; done
 READ_TOOLS=(Read Glob Grep mcp__taskview__list_goals mcp__taskview__list_tasks mcp__taskview__get_task mcp__taskview__get_task_history
   mcp__taskview__list_tags mcp__taskview__list_kanban_columns mcp__taskview__list_task_dependencies mcp__taskview__list_collaborators_for_goal
   mcp__taskview__list_lists $(r tail ls wc grep ps pgrep "rtk read" "rtk tail" "rtk ls" "rtk wc" "rtk grep" "rtk ps" "rtk pgrep" \
-  "git -C $BM log" "git -C $BM branch" "git -C $BM status" "git -C $VO log" "git -C $VO branch" "git -C $VO status" \
-  "rtk git -C $BM log" "rtk git -C $BM branch" "rtk git -C $BM status" "rtk git -C $VO log" "rtk git -C $VO branch" "rtk git -C $VO status"))
+  ${GIT_READ[@]+"${GIT_READ[@]}"}))
 WRITE_TOOLS=(mcp__taskview__update_task mcp__taskview__toggle_task_tag mcp__taskview__toggle_task_assignees)
 DENIED=(Write Edit MultiEdit NotebookEdit WebFetch WebSearch Task Agent mcp__supabase mcp__local-model mcp__engram mcp__plugin_engram_engram
   mcp__taskview__delete_task mcp__taskview__delete_tag mcp__taskview__delete_goal mcp__taskview__delete_list mcp__taskview__delete_kanban_column
@@ -75,10 +78,10 @@ else
 fi
 PROMPT="$PROMPT
 
-Hora actual: $(date '+%F %T') (local time)."
+Hora actual: $(date '+%F %T %Z')."
 
 OUT="$(mktemp -t ai-supervisor)"
-cd "$HOME/Projects/code" || exit 1
+cd "$CODE_ROOT" || exit 1
 start=$(date +%s)
 # ANTHROPIC_BASE_URL unset: the supervisor always talks to Anthropic directly (Max plan), never through a gateway
 env -u ANTHROPIC_BASE_URL -u ANTHROPIC_AUTH_TOKEN TASKVIEW_NOHOOK=1 AI_SUPERVISOR=1 \
@@ -115,7 +118,7 @@ if not dry: open(E["STATE"], "w").write(f"{E['DLOG_HASH']} {len(acc)} {int(time.
 for a in acc: log(f"  · {a}")
 for q in qs: log(f"  ? {q['tarea']}: {q['pregunta']}")
 if qs and not dry:
-    path = E["QUESTIONS"]; old = open(path).read() if os.path.exists(path) else "# Preguntas del supervisor para the owner\n\nResponde en la nota de la tarjeta (`RESPUESTA: …` + `ia·continuar`).\n"
+    path = E["QUESTIONS"]; old = open(path).read() if os.path.exists(path) else "# Preguntas del supervisor\n\nResponde en la nota de la tarjeta (`RESPUESTA: …` + `ia·continuar`).\n"
     new = [q for q in qs if f"{q['tarea']}: {q['pregunta']}" not in old]
     if new:
         with open(path, "w") as f:
@@ -123,11 +126,11 @@ if qs and not dry:
         last = float(open(E["LAST_NOTIFY"]).read() or 0) if os.path.exists(E["LAST_NOTIFY"]) else 0
         if time.time() - last >= 3600:  # at most one alert per hour
             m = re.search(r"\d+", new[0]["tarea"])
-            subprocess.run([sys.executable, os.path.join(E["HERE"], "notify.py"), "Supervisor IA: necesito a the owner",
+            subprocess.run([sys.executable, os.path.join(E["HERE"], "notify.py"), "Supervisor IA: necesito una respuesta",
                             f"{len(new)} pregunta(s) nueva(s): {new[0]['tarea']}: {new[0]['pregunta'][:120]}", "3", *(["--task", m.group(0)] if m else [])], timeout=30)
             open(E["LAST_NOTIFY"], "w").write(str(time.time()))
 if s.get("completado") and not dry:
     open(E["DONE"], "w").write(time.strftime("%F %T") + "\n")
-    log("completado: todas las tarjetas de Board B y Board V terminadas; el supervisor no vuelve a lanzar Claude")
+    log("completado: todas las tarjetas supervisadas terminadas; el supervisor no vuelve a lanzar Claude")
 PY
 rm -f "$OUT" "$OUT.err"

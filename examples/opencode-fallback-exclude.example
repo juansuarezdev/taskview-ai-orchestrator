@@ -1,0 +1,5 @@
+# Tableros con datos sensibles: su reserva es .opencode-fallback-model-private (solo el proveedor de pago), nunca modelos gratuitos.
+# Un nombre de tablero de TaskView por línea; admite comodines (fnmatch) y no distingue mayúsculas. Añade aquí cualquier tablero de trabajo.
+# Copia este fichero a .opencode-fallback-exclude (no se versiona). Vacío o ausente: sensitive_boards de orq-site.json; si tampoco hay, todos son sensibles.
+Client*
+Private Board

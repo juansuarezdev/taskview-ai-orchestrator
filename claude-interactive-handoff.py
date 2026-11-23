@@ -12,9 +12,10 @@ SESSIONS = HOME / ".claude/sessions"
 PROJECTS = HOME / ".claude/projects"
 STATE = HOME / ".claude/hooks/state/interactive-handoff"
 LOG = HOME / ".claude/hooks/state/interactive-handoff.log"
-DISPATCH_LIMIT = HOME / "Projects/code/taskview-community/selfhost/logs/.claude-limit-until"
+ORQ_DIR = Path(os.environ.get("ORQ_DIR") or Path(__file__).resolve().parent)  # the orchestrator folder
+DISPATCH_LIMIT = ORQ_DIR / "logs/.claude-limit-until"
 OC_BIN = HOME / ".opencode/bin/opencode"
-OC_MODEL_FILE = HOME / "Projects/code/taskview-community/selfhost/.opencode-model"
+OC_MODEL_FILE = ORQ_DIR / ".opencode-model"
 NOTIFY = HOME / ".claude/ClaudeNotify.app/Contents/MacOS/notify"
 LIMIT_HIT = re.compile(
     r"usage limit reached|5-hour limit|hit your limit|Goal paused · usage limit",
@@ -165,7 +166,7 @@ def write_handoff(cwd, name, sid, user_txt, snippet):
     body = (
         f"# Handoff Claude → OpenCode\n\n"
         f"- Sesión: `{name}` (`{sid}`)\n"
-        f"- Cuando: {time.strftime('%F %T')} local time\n"
+        f"- Cuando: {time.strftime('%F %T %Z')}\n"
         f"- Motivo: límite 5h de Claude\n"
         f"- Señal: {snippet}\n\n"
         f"## Último mensaje del usuario\n\n{user_txt or '(sin texto)'}\n\n"

@@ -1,8 +1,7 @@
 """Global settings of ai-dispatch.py that the orchestrator panel (orq-panel.py) can edit.
 
-The values live in selfhost/orq-config.json (gitignored, local state). A missing file, a missing key or an invalid value
-falls back to DEFAULTS, which are the constants ai-dispatch.py had hard-coded, so deleting the file restores the old
-behaviour. ai-dispatch.py reads it on every tick (each launchd run is a new process); the panel validates before saving.
+The values live in orq-config.json (gitignored, local state). A missing file, a missing key or an invalid value
+falls back to DEFAULTS, so deleting the file restores the default behaviour. ai-dispatch.py reads it on every tick (each launchd run is a new process); the panel validates before saving.
 """
 import copy
 import json
@@ -26,9 +25,9 @@ DEFAULTS = {
     "usage_alerts": [70, 90],             # one phone alert per window at each level
     "max_rounds": 3,                      # execute + review rounds
     "budget_usd": {"plan": 2, "exec": 5, "review": 2},
-    "merge_to_main_repos": ["repo-b", "repo-n", "repo-s", "repo-v"],
+    "merge_to_main_repos": [],            # repos whose ia·hecho branches are merged into main and pushed (never --force)
     "disabled_boards": [],                # board names the dispatcher skips (they stay in REPOS)
-    "priority_projects": [32],            # goal ids served first on every tick (32 = Board S)
+    "priority_projects": [],              # goal ids served first on every tick
     "priority_tasks": [],                 # task ids tried first: their board goes first and they lead their column
 }
 

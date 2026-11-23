@@ -6,11 +6,14 @@
 - Latest backup less than half the size of the previous one (data loss?): alert.
 - Once a week: restore the latest backup into a throwaway Postgres (restore-test.sh) and alert if it does not restore.
 - Anything still wrong afterwards: macOS notification.
-- Board C in production (https://app.example.com), from outside only (no SSH): /up and /login
+- Optional production site (orq-site.json health_host / ORQ_HEALTH_HOST), from outside only (no SSH): /up and /login
   must answer 200 and the TLS certificate must have at least 14 days left; separate alert.
 """
 import socket, ssl, subprocess, sys, time, urllib.error, urllib.request
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import orq_site  # noqa: E402
 
 HERE = Path(__file__).parent
 BACKUPS = Path.home() / "Backups/taskview"
@@ -52,7 +55,7 @@ def notify(msg, title="TaskView"):
     sh(sys.executable, str(HERE / "notify.py"), title, msg, "4")
 
 
-SITE_HOST = "app.example.com"
+SITE_HOST = orq_site.SITE["health_host"]  # "" = no production check
 TLS_MIN_DAYS = 14
 
 
@@ -76,14 +79,17 @@ def tls_days_left(host):
         return None
 
 
-def siteapp_problems(status=http_status, days_left=tls_days_left):
-    """What is wrong with SiteApp in production, seen from outside. Empty list = healthy."""
+def site_problems(status=http_status, days_left=tls_days_left, host=None):
+    """What is wrong with the production site, seen from outside. Empty list = healthy (or no host configured)."""
+    host = SITE_HOST if host is None else host
     problems = []
+    if not host:
+        return problems
     for path in ("/up", "/login"):
-        code = status(f"https://{SITE_HOST}{path}")
+        code = status(f"https://{host}{path}")
         if code != 200:
             problems.append(f"{path} responde {code or 'nada'}")
-    days = days_left(SITE_HOST)
+    days = days_left(host)
     if days is None:
         problems.append("el certificado TLS no valida")
     elif days < TLS_MIN_DAYS:
@@ -108,12 +114,12 @@ def main():
             (HERE / "logs/.restore-test").touch()
         else:
             problems.append("el backup no se restaura bien (restore-test.sh)")
-    siteapp = siteapp_problems()
-    if siteapp:
-        notify("Producción: " + " y ".join(siteapp), "SiteApp")
+    site = site_problems()
+    if site:
+        notify("Producción: " + " y ".join(site), SITE_HOST)
     if problems:
         notify("Fallo: " + " y ".join(problems))
-    return 1 if problems or siteapp else 0
+    return 1 if problems or site else 0
 
 
 if __name__ == "__main__":

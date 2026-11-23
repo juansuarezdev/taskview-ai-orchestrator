@@ -5,16 +5,17 @@
 - What is waiting in Review and what the AI dispatcher did since yesterday.
 Also emails a fuller version (full lists, titles of AI results and questions) with send-mail.
 Also prunes finished ai/ worktrees and branches (ai-clean.py --remove).
-Run daily from launchd (com.example.taskview-daily).
+Run daily from launchd (<prefix>.taskview-daily).
 """
 import json, os, subprocess, sys, time, urllib.request
 from pathlib import Path
 
 import ia_users
+import orq_site
 
 HERE = Path(__file__).resolve().parent
 API = "http://127.0.0.1:1725"
-MAIL_TO = "you@example.com"
+MAIL_TO = orq_site.SITE["mail_to"]
 HIMALAYA_DIR = "/opt/homebrew/bin"  # launchd has a minimal PATH
 
 
@@ -26,7 +27,7 @@ def call(method, path, body=None, tok=None):
     return json.load(urllib.request.urlopen(req, timeout=10))
 
 def token(c):
-    """Scoped API token (selfhost/.api-token, revocable from the web UI) when present, else the password login."""
+    """Scoped API token (.api-token, revocable from the web UI) when present, else the password login."""
     f = HERE / ".api-token"
     return f.read_text().strip() if f.exists() else call("POST", "/module/auth/login", {"login": c["login"], "password": c["password"]})["access"]
 
@@ -101,6 +102,8 @@ def mail_digest(title, due, top, ai_asks, ai_done, review):
         block("Todo lo que hay en Review", review),
     ]
     body = "\n\n".join(p for p in parts if p)
+    if not MAIL_TO:
+        return  # no mail_to in orq-site.json / ORQ_MAIL_TO: notification only
     env = {**os.environ, "PATH": f"{HIMALAYA_DIR}:{os.environ.get('PATH', '')}"}
     p = subprocess.run([str(Path.home() / ".local/bin/send-mail"), "--to", MAIL_TO, "--subject", f"TaskView: {title}", "--text", body],
                        capture_output=True, text=True, env=env)

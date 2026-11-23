@@ -2,11 +2,11 @@
 """Panel web del orquestador (ai-dispatch.py): estado, cola, preguntas, ejecuciones, uso y acciones seguras.
 
 Solo escucha en 127.0.0.1:8790 (Tailscale Serve lo publica en la tailnet, nunca en internet).
-Lanzado por el LaunchAgent com.example.taskview-orq-panel. Cada 30 s empuja un resumen a PhoneBox (/api/push/orquestador).
+Lanzado por el LaunchAgent <prefijo>.taskview-orq-panel. Cada 30 s empuja un resumen a PhoneBox (/api/push/orquestador).
 
 Configura además: ajustes globales del despachador (orq-config.json, ver orq_config.py) y, por tarjeta, asignación a
 Claude/OpenCode, etiquetas de modo, permiso web, prioridad en la cola y relanzar. Nunca toca tarjetas con para-mí, asignadas
-a the owner o completadas, ni borra tareas. Todo cambio queda en logs/orq-panel.log.
+al dueño o completadas, ni borra tareas. Todo cambio queda en logs/orq-panel.log.
 
 CLI:  orq-panel.py            servidor
       orq-panel.py --pause | --resume    crea / borra logs/.pausa-orquestador (lo usan los atajos de PhoneBox)
@@ -30,13 +30,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ia_users  # noqa: E402
 import orq_config  # noqa: E402
+import orq_site  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 PORT = 8790
-TS_HOST = "your-mac.your-tailnet.ts.net"
-TS_PORT = 8455
-ALLOWED_HOSTS = {f"127.0.0.1:{PORT}", f"localhost:{PORT}", f"{TS_HOST}:{TS_PORT}"}
-ALLOWED_ORIGINS = {f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}", f"https://{TS_HOST}:{TS_PORT}"}
+TS_HOST = orq_site.SITE["tailnet_host"]  # Tailscale Serve name (orq-site.json / ORQ_TS_HOST); empty = localhost only
+TS_PORT = orq_site.SITE["tailnet_port"]
+ALLOWED_HOSTS = {f"127.0.0.1:{PORT}", f"localhost:{PORT}"} | ({f"{TS_HOST}:{TS_PORT}"} if TS_HOST else set())
+ALLOWED_ORIGINS = {f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"} | ({f"https://{TS_HOST}:{TS_PORT}"} if TS_HOST else set())
 LOG = HERE / "logs/ai-dispatch.log"
 LOCK = HERE / "logs/.ai-dispatch.lock"
 PAUSE = HERE / "logs/.pausa-orquestador"
@@ -49,8 +50,7 @@ MINE_TAG = "para-mí"  # the owner's own cards: never touched from here
 WEB_ANSWER = "Permiso web concedido: puedes usar WebSearch y WebFetch. Continúa."
 DECIDE_ANSWER = "Decide tú la opción más razonable, deja anotado en la nota qué elegiste y por qué, y continúa."
 FRESH = 45  # s: a question newer than this is not answered blind from PhoneBox (the card may still show the previous one)
-AGENTS = ["com.example.taskview-ai", "com.example.taskview-supervisor", "com.example.taskview-orq-panel", "com.example.taskview-daily",
-          "com.example.taskview-health", "com.example.taskview-sync", "com.example.taskview-backup", "com.example.taskview-weekly"]
+AGENTS = [f"{orq_site.SITE['launchd_prefix']}.taskview-{n}" for n in ("ai", "supervisor", "orq-panel", "daily", "health", "sync", "backup", "weekly")]
 
 
 def _dispatcher():
@@ -465,16 +465,16 @@ def lock_reason(tag_names, emails, owner, complete):
     if MINE_TAG in tag_names:
         return "tiene la etiqueta para-mí"
     if not owner:
-        return "falta el email de the owner en ia-users.json"
+        return "falta el email del dueño en ia-users.json"
     if owner in emails:
-        return "está asignada a the owner"
+        return "está asignada al dueño"
     if complete:
         return "está completada"
     return None
 
 
 def owner():
-    """the owner's email as ai-dispatch.py resolves it: ia-users.json owner, else the email line of .credentials (only that line)."""
+    """The owner's email as ai-dispatch.py resolves it: ia-users.json owner, else the email line of .credentials (only that line)."""
     if "owner" not in CACHE:
         try:
             email = next((l.split("=", 1)[1] for l in (HERE / ".credentials").read_text().splitlines() if l.startswith("email=")), "")

@@ -1,6 +1,7 @@
-"""Permission rules and commit subject of ai-dispatch.py. Run: python3 selfhost/tests/test_dispatch_rules.py"""
+"""Permission rules and commit subject of ai-dispatch.py. Run: python3 tests/test_dispatch_rules.py"""
 import importlib.util, sys
 from pathlib import Path
+import os as _os2, tempfile as _tf2; _os2.environ.setdefault("ORQ_SITE_FILE", str(Path(_tf2.mkdtemp()) / "orq-site.json"))  # never the real site file
 import os as _os, tempfile as _tf; _os.environ.setdefault("ORQ_CONFIG_FILE", str(Path(_tf.mkdtemp()) / "orq-config.json"))  # never the real file
 
 HERE = Path(__file__).resolve().parent.parent

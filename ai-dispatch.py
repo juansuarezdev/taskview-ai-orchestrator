@@ -5,7 +5,7 @@ A task (status Backlog/TODO) runs when it is assigned to an AI user AND carries 
 The assignee decides WHO (ia-users.json): Claude -> claude, OpenCode -> OpenCode (free model, Opus still reviews); both -> Claude.
 The tag decides WHAT:
   ia·plan      -> plans only (read-only), writes the plan into the task note, moves it to Review
-  ia·ejecutar  -> implements it in its own git worktree/branch `ai/t<id>`, moves it to Review; for Board B, Board V (goals 29/30) and Project Board N (repo repo-n), then merges `ai/t<id>` into main and pushes origin if the remote exists (never --force)
+  ia·ejecutar  -> implements it in its own git worktree/branch `ai/t<id>`, moves it to Review; for the repos in merge_to_main_repos (orq-config.json), then merges `ai/t<id>` into main and pushes origin if the remote exists (never --force)
 A mode tag with no AI assignee does nothing. Tasks assigned to the user (owner in ia-users.json) are never touched.
 If Claude hits the 5-hour session limit during exec (or a cooldown file says so), the same task continues with OpenCode automatically; Opus review is still deferred on limit.
 If OpenCode fails for quota/rate limit/credits it retries once on the reserve (.opencode-fallback-model = Magpie group/siempre;
@@ -19,33 +19,34 @@ Progress tags: ia·trabajando while running, then ia·plan-listo / ia·hecho / i
 Packs (ia-packs.json): ia·pack·analizar / implementar / barato / silencioso = mode + email in one tag
 (barato is plain ia·ejecutar + mail: the cheap runner comes from assigning OpenCode).
 Tag ia·correo on a task: when its run ends the result is emailed (send-mail) and the tag is removed.
-One task at a time (flock). Run every minute from launchd. `--dry-run` only lists. `--integrate-main <repo> <branch>` retries a 29/30 merge into main (same path as after ia·hecho; never --force).
+One task at a time (flock). Run every minute from launchd. `--dry-run` only lists. `--integrate-main <repo> <branch>` retries a merge into main (same path as after ia·hecho; never --force).
 """
 import base64, datetime, fcntl, html, json, os, re, subprocess, sys, tempfile, time, urllib.request
 from pathlib import Path
 
 import ia_users
 import orq_config
+import orq_site
 
 HERE = Path(__file__).resolve().parent
 API = "http://127.0.0.1:1725"
-CODE = Path.home() / "Projects/code"
-EXTRA_ROOTS = {"repo-r": Path.home() / "Projects/repo-r",  # boards whose folder is not ~/Projects/code/<repo>; no git repo there = plan only
-               "inbox": CODE,  # loose tasks: read-only analysis across every repo
-               "repo-h": Path.home() / "vault/projects/project"}
+SITE = orq_site.SITE  # boards, repos and paths of this install (orq-site.json; see examples/orq-site.example.json)
+CODE = orq_site.CODE
+# Boards whose folder is not <code_root>/<repo>; no git repo there = plan only. "." = code_root itself (read-only across every repo).
+EXTRA_ROOTS = {k: CODE if v == "." else orq_site.path(v) for k, v in SITE["extra_roots"].items()}
 WORKTREES = CODE / ".ai-worktrees"
-# Per-board default worktree base while nothing is merged to main (the owner, 15 nov): new ai/t<id> branches start from the
-# board scaffold instead of main. A "WORKTREE_BASE: <branch>" line in the task note still wins (chain phases that way).
-BOARD_BASE = {"repo-b": "ai/t382", "repo-v": "ai/t394"}
-# the owner, 15 nov 2026 20:42 : finished work in projects 29/30 lands on main and origin.
-MERGE_TO_MAIN_REPOS = {"repo-b", "repo-v", "repo-n", "repo-s"}  # repo-n: Project Board N (directiva autónoma de the owner, 15 nov 21:28)
-# Test command run on main before pushing (default `npm test`). repo-n is Swift: scripts/test.sh = swift test of AppCore (+ xcodebuild if present).
-MAIN_TEST_CMD = {"repo-n": ["bash", "scripts/test.sh"]}
-# repo-s (the owner, 21 nov 2026): Laravel in app/, no root package.json. Pest via the sail-8.5/app image, as the
-# SP-498/SP-499 reviews did. The tests run on a `git archive HEAD:app` copy in /private/tmp (vendor/ and .env are
-# gitignored, and a failed run must not leave untracked files in the main checkout): composer install (persistent
-# cache) + php artisan test with a throwaway APP_KEY. Nothing is written to the principal checkout.
-LARAVEL_DOCKER_TEST = {"repo-s": "app"}
+# Per-board default worktree base while nothing is merged to main: new ai/t<id> branches start from the board scaffold
+# instead of main. A "WORKTREE_BASE: <branch>" line in the task note still wins (chain phases that way).
+BOARD_BASE = dict(SITE["board_base"])
+# Finished work in these repos lands on main and origin (overridden every tick by orq-config.json merge_to_main_repos).
+MERGE_TO_MAIN_REPOS = set()
+# Test command run on main before pushing (default `npm test`), e.g. {"my-swift-app": ["bash", "scripts/test.sh"]}.
+MAIN_TEST_CMD = dict(SITE["main_test_cmd"])
+# Laravel apps in a subfolder with no root package.json: Pest/PHPUnit via the sail-8.5/app image. The tests run on a
+# `git archive HEAD:<sub>` copy in /private/tmp (vendor/ and .env are gitignored, and a failed run must not leave
+# untracked files in the main checkout): composer install (persistent cache) + php artisan test with a throwaway APP_KEY.
+# Nothing is written to the principal checkout.
+LARAVEL_DOCKER_TEST = dict(SITE["laravel_docker_test"])
 COMPOSER_CACHE = Path.home() / ".cache/ai-dispatch-composer"
 
 
@@ -72,7 +73,7 @@ def main_test_cmd(repo_dir):
     if (repo_dir / "package.json").exists():
         return ["npm", "test"]
     return None
-NPM_TEST_TIMEOUT = 15 * 60  # repo-v e2e included
+NPM_TEST_TIMEOUT = 15 * 60  # e2e suites included
 
 
 def note_overrides(note):
@@ -88,15 +89,13 @@ def worktree_base(repo, note):
     m = re.search(r"(?im)^WORKTREE_BASE:\s*(\S+)", note or "")
     return m.group(1) if m else BOARD_BASE.get(repo)
 LOG = HERE / "logs/ai-dispatch.log"
-REPOS = {"Board M": "repo-m", "Board G": "repo-g", "Board E": "repo-e", "TaskView": "taskview-community", "Board R": "repo-r", "Board GC": "repo-gc", "Board SB": "repo-sb", "local-model": "local-model",
-         "Board A": "repo-a", "Board H": "repo-h", "Inbox": "inbox", "Board C": "repo-c", "Board B": "repo-b", "Board V": "repo-v",
-         "Project N": "repo-n", "Board S": "repo-s"}
+REPOS = dict(SITE["repos"])  # TaskView board name -> repo folder; boards not listed are skipped
 TRIGGERS = {"ia·plan": "plan", "ia·ejecutar": "exec"}  # mode tag -> mode; the runner comes from the assignee
 # packs (ia-packs.json): one tag = a mode tag + optional mail, so tasks need a single tag; they win over loose triggers
 PACKS = json.loads((HERE / "ia-packs.json").read_text()) if (HERE / "ia-packs.json").exists() else {}
 TRIGGERS = {**{n: TRIGGERS[p["trigger"]] for n, p in PACKS.items()}, **TRIGGERS}
 MAIL = "ia·correo"  # per-task: email the result to MAIL_TO when the run ends, then the tag is removed
-MAIL_TO = "you@example.com"
+MAIL_TO = SITE["mail_to"]  # "" = ia·correo is ignored
 HIMALAYA_DIR = "/opt/homebrew/bin"  # launchd PATH does not include it
 CONTINUE = "ia·continuar"  # set by the user on a Review task after writing RESPUESTA: in the note
 PROGRESS = {"ia·trabajando": "#f59e0b", "ia·plan-listo": "#3b82f6", "ia·hecho": "#22c55e", "ia·cambios": "#eab308", "ia·fallo": "#ef4444",
@@ -135,7 +134,7 @@ _DENIED_BASH = ["git push", "rm", "curl", "sudo", "git reset", "git checkout mai
                 "git commit --no-verify", "git commit -n"]
 # The user's RTK PreToolUse hook rewrites commands before the permission check (`git add` -> `rtk git add`, `cat`/`head` -> `rtk read`,
 # `vendor/bin/pint` -> `rtk pint`), so every allow AND deny rule also needs its rtk form; without it headless sessions were denied even
-# `git add -A` (2026-11-14, SiteApp t368-t379) and `git push` slipped past the deny list as `rtk git push`.
+# `git add -A` and `git push` slipped past the deny list as `rtk git push`.
 _RTK_ALIAS = {"cat": "read", "head": "read", "vendor/bin/pint": "pint", "php vendor/bin/pint": "pint"}
 
 
@@ -147,17 +146,12 @@ def _bash_rules(cmds):
 
 
 ALLOWED = ["Read", "Glob", "Grep", "Edit", "Write", *_bash_rules(_ALLOWED_BASH)]
-# the owner, 20 nov 2026 23:01 : Board S runs everything in Docker (Laravel/Sail, Playwright captures), so its
-# sessions may use docker; scoped to that repo only (its checkout and its .ai-worktrees/repo-s-t<N> worktrees).
-REPO_EXTRA_BASH = {"repo-s": ["docker run", "docker compose", "docker ps", "docker images", "docker logs", "docker exec",
-                                     "docker build", "docker pull", "docker image inspect"]}
-
-
-# the owner, 21 nov 2026 11:57 , t456: Board V sessions get full Bash inside the repo-v checkout and its
-# .ai-worktrees/repo-v-t<N> worktrees (git rm/checkout/commit, npm run check, npm test, APP_DB=... prefixes). The global
-# DENIED list still applies (rm, git push/reset/merge/rebase, curl, sudo) plus no Docker for this repo.
-REPO_BASH_ALL = {"repo-v"}
-REPO_EXTRA_DENIED = {"repo-v": ["docker", "docker-compose", "podman", "colima"]}
+# Per-repo Bash scopes (orq-site.json), applied to the repo checkout and its .ai-worktrees/<repo>-t<N> worktrees only:
+# repo_extra_bash adds command prefixes (e.g. docker for a repo that runs everything in containers); repo_bash_all gives
+# full Bash (the global DENIED list still applies: rm, git push/reset/merge/rebase, curl, sudo); repo_extra_denied adds denials.
+REPO_EXTRA_BASH = {k: list(v) for k, v in SITE["repo_extra_bash"].items()}
+REPO_BASH_ALL = set(SITE["repo_bash_all"])
+REPO_EXTRA_DENIED = {k: list(v) for k, v in SITE["repo_extra_denied"].items()}
 
 
 def _repo_of(cwd):
@@ -181,10 +175,10 @@ def repo_extra_denied(cwd):
     return _bash_rules(REPO_EXTRA_DENIED.get(_repo_of(cwd), []))
 
 
-# the owner, 20 nov 2026 19:01/23:01: these goal ids are served first on every tick (before the round-robin of the rest).
-PRIORITY_PROJECTS = [32]  # 32 = Board S
+# These goal ids are served first on every tick (before the round-robin of the rest); set from orq-config.json.
+PRIORITY_PROJECTS = []
 WEB = ["WebSearch", "WebFetch"]  # analysis (plan) sessions may research the web
-WEB_TASKS_FILE = Path(__file__).resolve().parent / "web-tasks.txt"  # task ids (one per line) whose exec sessions may also use the web, granted by the owner
+WEB_TASKS_FILE = Path(__file__).resolve().parent / "web-tasks.txt"  # task ids (one per line) whose exec sessions may also use the web, granted by the user
 
 
 def web_ok(perm):
@@ -202,11 +196,19 @@ def log(msg):
     with LOG.open("a") as f:
         f.write(f"{time.strftime('%F %T')} {msg}\n")
     m = re.match(r"(start|end) t(\d+)", msg)
-    if m:  # same event into the shared registry (vault-log -> events.jsonl)
-        try:
-            subprocess.run([str(Path.home() / "vault/bin/vault-log"), "--agent", "dispatcher", "--kind", m.group(1), "--task", "t" + m.group(2), msg], check=False, timeout=10)
-        except Exception:
-            pass
+    if m:  # same event into an optional shared registry (orq-site.json event_log_cmd)
+        event_log(m.group(1), "t" + m.group(2), msg)
+
+
+def event_log(kind, task, msg):
+    """Run SITE event_log_cmd with --agent dispatcher --kind <kind> --task <task> <msg>; no command configured = no-op."""
+    if not SITE["event_log_cmd"]:
+        return
+    try:
+        subprocess.run([str(orq_site.path(SITE["event_log_cmd"])), "--agent", "dispatcher", "--kind", kind, "--task", task, msg],
+                       check=False, timeout=10)
+    except Exception:
+        pass
 
 
 def call(method, path, body=None, tok=None):
@@ -495,7 +497,7 @@ CURRENT_GOAL = ""  # board name of the task being run (sensitive boards never us
 OC_LAST = ""  # model the last OpenCode run actually used (primary or reserve)
 RUN_ENV = {}  # extra env for the sessions of the task being run (test DB, PHP memory); set in run()
 HERD_BIN = str(Path.home() / ".config/herd-lite/bin")  # php/composer; launchd PATH does not include it
-TEST_ENV_REPOS = {"repo-c"}  # Laravel+Sail repos: `php artisan test` in the worktree against the Sail Postgres `testing` DB
+TEST_ENV_REPOS = set(SITE["test_env_repos"])  # Laravel+Sail repos: `php artisan test` in the worktree against the Sail Postgres `testing` DB
 TEST_HINT = ("\nTests: el dispatcher ya dejó vendor/, node_modules/ y public/build listos (si faltan, `composer install`, `npm ci` y `npm run build`). Ejecuta `php artisan test` (o `php vendor/bin/phpunit`): el entorno ya apunta a la BD `testing` "
              "de Sail (Postgres; SQLite no sirve por btree_gist). No uses sail up, ni migraciones contra la BD de desarrollo, ni toques .env. "
              "Commits con `git add` y `git commit` solo en tu rama ai/t<id>; nunca push, merge, rebase ni cambiar a main.\n")
@@ -581,7 +583,7 @@ OC_MODEL = _OC_FILE.read_text().strip() if _OC_FILE.exists() else "opencode/deep
 _OC_FALLBACK_FILE = HERE / ".opencode-fallback-model"  # one line; empty/absent = no reserve retry
 _OC_FALLBACK_PRIVATE_FILE = HERE / ".opencode-fallback-model-private"  # reserve for sensitive boards; empty/absent = no retry there
 _OC_SENSITIVE_FILE = HERE / ".opencode-fallback-exclude"  # board names (fnmatch, case-insensitive, # comments) that never use the public reserve
-_DEFAULT_SENSITIVE = ["SiteApp*", "Board M", "Board V"]
+_DEFAULT_SENSITIVE = list(SITE["sensitive_boards"])
 ALERT_FILE = HERE / "logs/.ia-agotado"  # json of the last "everything exhausted" event
 ALERT_EVERY = 30 * 60  # at most one phone/Mac alert per 30 min
 
@@ -598,7 +600,7 @@ def _sensitive_patterns():
         pats = [l.strip() for l in _OC_SENSITIVE_FILE.read_text().splitlines() if l.strip() and not l.strip().startswith("#")]
     except Exception:
         pats = []
-    return pats or _DEFAULT_SENSITIVE
+    return pats or _DEFAULT_SENSITIVE or ["*"]  # nothing configured: every board counts as sensitive (safe default)
 
 
 def is_sensitive_board(board):
@@ -613,7 +615,7 @@ def fallback_model_for(board):
     return _read_line(_OC_FALLBACK_PRIVATE_FILE if is_sensitive_board(board) else _OC_FALLBACK_FILE)
 
 
-# Last resort (2026-11-17, the owner): free OpenCode Zen models only once the paid ones (Claude, OpenCode Go) are out, and
+# Last resort: free OpenCode Zen models only once the paid ones (Claude, OpenCode Go) are out, and
 # never on sensitive boards (free endpoints may train on what they get). One alert when going free, one when Go is back.
 _OC_FREE_FILE = HERE / ".opencode-free-model"  # one line, e.g. opencode/deepseek-v4.1-flash-free; empty/absent = never free
 FREE_STATE = HERE / "logs/.modo-gratis.json"  # {"since", "model"} while the free model stands in for Go
@@ -646,7 +648,7 @@ def go_back_at():
 
 
 def enter_free_mode(model, now=None):
-    """First run on the free model since Go ran out: record it and tell the owner once."""
+    """First run on the free model since Go ran out: record it and tell the user once."""
     if FREE_STATE.exists():
         return
     FREE_STATE.parent.mkdir(exist_ok=True)
@@ -658,7 +660,7 @@ def enter_free_mode(model, now=None):
 
 
 def paid_release_check(now=None):
-    """Once Go has quota again (its date passed), leave free mode and tell the owner."""
+    """Once Go has quota again (its date passed), leave free mode and tell the user."""
     if not FREE_STATE.exists() or opencode_exhausted(now):
         return
     FREE_STATE.unlink(missing_ok=True)
@@ -706,7 +708,7 @@ def claude_is_limited():
 def mark_claude_limited(text=None, hours=5):
     """Record cooldown until Claude's 5h window resets (default +5h from now)."""
     until = time.time() + hours * 3600
-    # best-effort parse of "resets … HH:MM" in local time-local wall clock
+    # best-effort parse of "resets … HH:MM" in local wall-clock time
     m = re.search(r"resets?\s+(?:at\s+)?(\d{1,2}):(\d{2})\s*(am|pm)?", text or "", re.I)
     if m:
         h, mi = int(m.group(1)), int(m.group(2))
@@ -737,12 +739,12 @@ PACE_HARD = 90  # % from which no Claude run starts, whatever the line says
 USAGE_STALE = 15 * 60  # older figures are only a lower bound
 USAGE_ALERTS = (70, 90)  # one phone alert per window at each level
 PROBE_MODEL = "claude-haiku-4-5"
-# The weekly window (seven_day) is shared with the owner's own sessions: same straight line over 7 days, so the dispatcher never
+# The weekly window (seven_day) is shared with the user's own sessions: same straight line over 7 days, so the dispatcher never
 # spends the week ahead of time. A wider slack than the 5h line because the weekly figure moves slowly.
 WEEK_HOURS = 168
 WEEK_SLACK = 15
 WEEK_HARD = 90
-# Usage reservations set by the owner: windows (local time) in which Claude only runs for the boards in "solo" (empty = for none),
+# Usage reservations set by the user: windows (local time) in which Claude only runs for the boards in "solo" (empty = for none),
 # so the 5h window reaches the reserved work untouched. [{"desde": "2026-11-19 00:00", "hasta": "2026-11-19 15:00", "solo": []}]
 RESERVE_FILE = HERE / ".reserva-claude.json"
 
@@ -992,11 +994,7 @@ def alert_all_exhausted(primary, reserve, diag):
     flat = " ".join((diag or "").split())[-200:]
     claude = f"Claude en cooldown hasta {time.strftime('%H:%M', time.localtime(float(CLAUDE_LIMIT_FILE.read_text().strip())))}" if claude_is_limited() else "Claude sin cooldown registrado"
     log(f"agotado t{CURRENT_TASK} [{CURRENT_GOAL}] opencode={primary} reserva={reserve or '-'} · {claude} · {flat}")
-    try:
-        subprocess.run([str(Path.home() / "vault/bin/vault-log"), "--agent", "dispatcher", "--kind", "error", "--task", f"t{CURRENT_TASK}",
-                        f"IA agotada: {primary} y reserva {reserve or '-'} sin cuota ({CURRENT_GOAL}); {claude}"], check=False, timeout=10)
-    except Exception:
-        pass
+    event_log("error", f"t{CURRENT_TASK}", f"IA agotada: {primary} y reserva {reserve or '-'} sin cuota ({CURRENT_GOAL}); {claude}")
     try:
         last = json.loads(ALERT_FILE.read_text()).get("ts", 0)
     except Exception:
@@ -1080,7 +1078,7 @@ def _git(repo, *args, timeout=60):
 def integrate_to_main(repo_dir, branch, tid=None):
     """Merge `branch` into main from the principal checkout, test, and push if origin exists.
 
-    Only used for MERGE_TO_MAIN_REPOS (Board B, Board V, repo-n). Never --force. Main must be checked out and clean.
+    Only used for MERGE_TO_MAIN_REPOS. Never --force. Main must be checked out and clean.
     On merge conflict: git merge --abort, log, and signal ia·pregunta (ask=True).
     On npm test failure: reset main to ORIG_HEAD if this call just merged, log, do not push (ask=False).
     Returns (ok, detail, ask).
@@ -1151,7 +1149,7 @@ def integrate_to_main(repo_dir, branch, tid=None):
         tail = blob(test).splitlines()[-4:]
         log(f"{label}integrar main: tests ({test_cmd[0]}) rc={test.returncode} :: {' | '.join(tail)[:400]}")
     # main was verified clean before the merge, so tracked files modified now were rewritten by the test run itself
-    # (repo-v e2e regenerates docs/capturas/*.png): restore them so the next integration does not see a dirty main.
+    # (e.g. an e2e suite that regenerates screenshots): restore them so the next integration does not see a dirty main.
     dirty = [f for f in _git(repo_dir, "diff", "--name-only").stdout.splitlines() if f.strip()]
     if dirty:
         _git(repo_dir, "checkout", "--", *dirty)
@@ -1209,8 +1207,9 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
     ctx = board_context(api, goal, st, t)
     RUN_ENV = repo_test_env(base) if repo in TEST_ENV_REPOS else {}
     ctx += TEST_HINT if RUN_ENV else ""
-    ctx += ("\nCorreo: si la tarea pide enviar un correo, usa `send-mail --to you@example.com --subject \"...\" --text \"...\" [--html FILE] [--attach FILE]`. "
-            "Solo a ese destinatario; cualquier otro, pregunta antes con PREGUNTA:.\n")
+    if MAIL_TO:
+        ctx += (f"\nCorreo: si la tarea pide enviar un correo, usa `send-mail --to {MAIL_TO} --subject \"...\" --text \"...\" [--html FILE] [--attach FILE]`. "
+                "Solo a ese destinatario; cualquier otro, pregunta antes con PREGUNTA:.\n")
     stamp = lambda: time.strftime("%F %H:%M")
     sections, ok, verdict_ok, asked, review_deferred = [], False, True, None, False  # asked = session id waiting for user
     try:
@@ -1368,6 +1367,9 @@ def run(api, goal, repo, st, tags, t, mode, trig, runner="claude", resume=None):
 
 def mail_result(api, tags, t, msg, body, done_tag):
     """Email the outcome of one run (3 tries, the network can blip); the tag is removed only when the mail went out."""
+    if not MAIL_TO:
+        log(f"mail t{t['id']}: sin mail_to en orq-site.json; no se envía")
+        return
     text = f"{t['description']}\n{msg} ({done_tag})\n{body[-40000:]}"
     cmd = [str(Path.home() / ".local/bin/send-mail"), "--to", MAIL_TO, "--subject", f"IA: {t['description'][:70]} — {msg}", "--text", text]
     env = {**os.environ, "PATH": f"{HIMALAYA_DIR}:{os.environ.get('PATH', '')}"}

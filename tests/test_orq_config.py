@@ -1,7 +1,8 @@
 """orq-config.json: defaults equal the old constants, validation, partial save, and how ai-dispatch.py applies it.
-Run: python3 selfhost/tests/test_orq_config.py"""
+Run: python3 tests/test_orq_config.py"""
 import importlib.util, json, os, sys, tempfile, unittest
 from pathlib import Path
+import os as _os2, tempfile as _tf2; _os2.environ.setdefault("ORQ_SITE_FILE", str(Path(_tf2.mkdtemp()) / "orq-site.json"))  # never the real site file
 
 HERE = Path(__file__).resolve().parent.parent
 TMP = Path(tempfile.mkdtemp())
@@ -23,8 +24,8 @@ class T(unittest.TestCase):
 
     def test_defaults_are_the_old_constants(self):
         d = dispatcher()
-        self.assertEqual(d.MERGE_TO_MAIN_REPOS, {"repo-b", "repo-v", "repo-n", "repo-s"})
-        self.assertEqual(d.PRIORITY_PROJECTS, [32])
+        self.assertEqual(d.MERGE_TO_MAIN_REPOS, set())
+        self.assertEqual(d.PRIORITY_PROJECTS, [])
         self.assertEqual((d.PACE_HOURS, d.PACE_SLACK, d.PACE_HARD, d.WEEK_SLACK, d.WEEK_HARD), (4, 10, 90, 15, 90))
         self.assertEqual(d.USAGE_ALERTS, (70, 90))
         self.assertEqual(d.MAX_ROUNDS, 3)
@@ -37,7 +38,7 @@ class T(unittest.TestCase):
         cfg, err = O.validate({"tick_secs": 30, "pace_hard": 95, "runner_both": "gpt", "nope": 1, "budget_usd": {"plan": 1, "exec": 3}, "usage_alerts": [90, 70, 70]})
         self.assertEqual(set(err), {"tick_secs", "runner_both", "nope", "budget_usd"})
         self.assertEqual((cfg["pace_hard"], cfg["usage_alerts"]), (95, [70, 90]))
-        _, err = O.validate({"merge_to_main_repos": ["repo-n", "x"]}, {"merge_to_main_repos": ["repo-n"]})
+        _, err = O.validate({"merge_to_main_repos": ["my-app", "x"]}, {"merge_to_main_repos": ["my-app"]})
         self.assertIn("x", err["merge_to_main_repos"])
         _, err = O.validate({"handoff_to_opencode": 1, "max_rounds": 2.5, "priority_tasks": [5, 3, 5]})
         self.assertEqual(set(err), {"handoff_to_opencode", "max_rounds"})
@@ -58,10 +59,10 @@ class T(unittest.TestCase):
         self.assertIn("_", err)
 
     def test_dispatcher_applies_config(self):
-        O.FILE.write_text(json.dumps({"merge_to_main_repos": ["repo-n"], "pace_hard": 70, "budget_usd": {"plan": 1.5, "exec": 4, "review": 2},
+        O.FILE.write_text(json.dumps({"merge_to_main_repos": ["my-app"], "pace_hard": 70, "budget_usd": {"plan": 1.5, "exec": 4, "review": 2},
                                       "runner_both": "opencode", "default_runner": "claude", "max_rounds": 1}))
         d = dispatcher()
-        self.assertEqual((d.MERGE_TO_MAIN_REPOS, d.PACE_HARD, d.MAX_ROUNDS), ({"repo-n"}, 70, 1))
+        self.assertEqual((d.MERGE_TO_MAIN_REPOS, d.PACE_HARD, d.MAX_ROUNDS), ({"my-app"}, 70, 1))
         self.assertEqual(d.BUDGET, {"plan": "1.5", "exec": "4", "review": "2"})
         owner, claude, oc = "owner@example.com", d.ia_users.RUNNERS["claude"], d.ia_users.RUNNERS["opencode"]
         self.assertEqual(d.select({"ia·ejecutar"}, {claude, oc}, owner), ("ia·ejecutar", "exec", "opencode"))

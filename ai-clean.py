@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""List the git worktrees created by ai-dispatch (~/Projects/code/.ai-worktrees) and whether their task is Done.
+"""List the git worktrees created by ai-dispatch (<code_root>/.ai-worktrees) and whether their task is Done.
 
 Default is a dry run. `--remove` deletes only worktrees whose task is Done and whose branch has no unmerged
 commits. It also deletes `ai/t<id>` branches (local, and on origin if pushed) once their PR was merged on GitHub,
@@ -15,7 +15,10 @@ import argparse, json, re, subprocess, urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-WT = Path.home() / "Projects/code/.ai-worktrees"
+import orq_site  # noqa: E402
+
+CODE = orq_site.CODE
+WT = CODE / ".ai-worktrees"
 API = "http://127.0.0.1:1725"
 
 
@@ -27,10 +30,10 @@ def call(method, path, body=None, tok=None):
     return json.load(urllib.request.urlopen(req, timeout=10))
 
 
-REPO_NAMES = ["repo-m", "repo-g", "repo-e", "taskview-community"]
+REPO_NAMES = list(orq_site.SITE["clean_repos"])  # orq-site.json
 
 def token(c):
-    """Scoped API token (selfhost/.api-token, revocable from the web UI) when present, else the password login."""
+    """Scoped API token (.api-token, revocable from the web UI) when present, else the password login."""
     f = HERE / ".api-token"
     return f.read_text().strip() if f.exists() else call("POST", "/module/auth/login", {"login": c["login"], "password": c["password"]})["access"]
 
@@ -51,7 +54,7 @@ def pr_merged(repo, branch):
 def prune_branches(done, apply, say):
     """Delete ai/t<id> branches whose PR was accepted (or whose task is Done and already merged into main)."""
     for name in REPO_NAMES:
-        repo = Path.home() / "Projects/code" / name
+        repo = CODE / name
         if not (repo / ".git").exists():
             continue
         for br in git(repo, "for-each-ref", "--format=%(refname:short)", "refs/heads/ai/").stdout.split():
@@ -96,7 +99,7 @@ def main():
         m = re.match(r"(.+)-t(\d+)$", wt.name)
         if not m:
             continue
-        repo, tid = Path.home() / "Projects/code" / m[1], int(m[2])
+        repo, tid = CODE / m[1], int(m[2])
         r = subprocess.run(["git", "-C", str(repo), "log", "--oneline", f"main..ai/t{tid}"], capture_output=True, text=True)
         state = "Done" if tid in done else "abierta"
         verifiable = r.returncode == 0

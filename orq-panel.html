@@ -240,7 +240,7 @@ pre { white-space: pre-wrap; background: var(--panel-2); border: 1px solid var(-
 
     <section id="despachador">
       <h2>Despachador</h2>
-      <p class="lead">Ajustes globales de <span class="mono">ai-dispatch.py</span>. Se guardan en <span class="mono">selfhost/orq-config.json</span> y se aplican en el siguiente ciclo; los que no cambies siguen con su valor por defecto. Un punto de color marca lo que ya no está por defecto.</p>
+      <p class="lead">Ajustes globales de <span class="mono">ai-dispatch.py</span>. Se guardan en <span class="mono">orq-config.json</span> y se aplican en el siguiente ciclo; los que no cambies siguen con su valor por defecto. Un punto de color marca lo que ya no está por defecto.</p>
       <div id="cfgErr"></div>
       <form id="cfg" autocomplete="off"></form>
     </section>
@@ -254,7 +254,7 @@ pre { white-space: pre-wrap; background: var(--panel-2); border: 1px solid var(-
       </div>
       <div class="card"><h3>LaunchAgents</h3><div class="tw" id="agents"></div></div>
       <div class="card"><h3>Salida en bruto</h3><div id="raw"></div></div>
-      <div class="foot">Toda acción pide confirmación y queda en <span class="mono">selfhost/logs/orq-panel.log</span>. Solo escucha en 127.0.0.1.</div>
+      <div class="foot">Toda acción pide confirmación y queda en <span class="mono">logs/orq-panel.log</span>. Solo escucha en 127.0.0.1.</div>
     </section>
   </main>
 </div>
@@ -429,10 +429,10 @@ function render(s) {
     <button class="btn sm danger" data-web-off="${w.id}">Quitar</button></li>`).join('') + '</ul>' : '<div class="empty">Ninguna tarjeta con permiso web en ejecución.</div>') +
     `<p class="muted" style="font-size:12px;margin:10px 0 0">Los planes siempre pueden usar la web; esto lo abre también a la ejecución (<span class="mono">web-tasks.txt</span>). Para concederlo, abre la tarjeta.</p>`;
 
-  const nice = {'com.example.taskview-ai': 'Despachador', 'com.example.taskview-supervisor': 'Supervisor (cada 15 min)', 'com.example.taskview-orq-panel': 'Este panel'};
+  const nice = {'ai': 'Despachador', 'supervisor': 'Supervisor (cada 15 min)', 'orq-panel': 'Este panel'};
   $('agents').innerHTML = '<table class="items-t"><tbody>' + s.agents.map((a) => {
     const [txt, cls] = !a.loaded ? ['No cargado', 'bad'] : a.pid ? ['En marcha', 'info'] : a.last_exit === '0' ? ['Listo', 'ok'] : ['Salida ' + a.last_exit, 'warn'];
-    return `<tr><td><div>${esc(nice[a.label] || a.label.replace('com.example.taskview-', ''))}</div><div class="mono muted">${esc(a.label)}</div></td>
+    return `<tr><td><div>${esc(nice[a.label.replace(/^.*\.taskview-/, '')] || a.label.replace(/^.*\.taskview-/, ''))}</div><div class="mono muted">${esc(a.label)}</div></td>
       <td class="num">${a.pid ? `<span class="mono muted">pid ${a.pid}</span> ` : ''}<span class="tag ${cls}">${esc(txt)}</span></td></tr>`;
   }).join('') + '</tbody></table>';
   $('raw').innerHTML = `<details><summary>Salida de estado-orquestador y de --usage</summary><pre>${esc(s.estado || '')}</pre><pre>${esc(u.raw || '')}</pre></details>`;

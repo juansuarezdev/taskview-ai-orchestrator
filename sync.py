@@ -11,11 +11,13 @@ from pathlib import Path
 
 API = "http://127.0.0.1:1725"
 HERE = Path(__file__).parent
-CODE = Path.home() / "Projects/code"
-OWNER = "your-github-user"
-# repo directory in ~/Projects/code -> board (only active projects sync)
-REPO_BOARDS = {"repo-m": "Board M", "repo-g": "Board G", "repo-e": "Board E",
-               "taskview-community": "TaskView", "repo-tm": "TaskView"}
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import orq_site  # noqa: E402
+
+CODE = orq_site.CODE
+OWNER = orq_site.SITE["github_owner"]  # GitHub user whose repos sync (orq-site.json / ORQ_GITHUB_OWNER)
+# repo directory in code_root -> board (only these sync)
+REPO_BOARDS = dict(orq_site.SITE["github_repo_boards"])
 KIND_COLORS = {"issue": "#f59e0b", "pr": "#3b82f6"}
 REMINDER_PREFIX = "TaskView: "
 REMINDERS_SYNC = False  # set True to create "TaskView: …" reminders for tasks with a deadline again
@@ -34,7 +36,7 @@ def call(method, path, body=None, tok=None):
     return json.load(urllib.request.urlopen(req))
 
 def token(c):
-    """Scoped API token (selfhost/.api-token, revocable from the web UI) when present, else the password login."""
+    """Scoped API token (.api-token, revocable from the web UI) when present, else the password login."""
     f = HERE / ".api-token"
     return f.read_text().strip() if f.exists() else call("POST", "/module/auth/login", {"login": c["login"], "password": c["password"]})["access"]
 
@@ -88,7 +90,7 @@ def main():
                     api("PATCH", "/module/tasks", {"id": t["id"], "complete": True, "statusId": done_status[t["goalId"]]})
                     print("closed", it["url"])
 
-    # 2. Reminders (iCloud only) — disabled 2026-11-23 at the owner's request: projects live in TaskView, not Reminders.
+    # 2. Reminders (iCloud only) — disabled by default (REMINDERS_SYNC): projects live in TaskView, not Reminders.
     if not REMINDERS_SYNC:
         return
     have = sh("osascript", "-e", 'tell application "Reminders" to get name of every reminder of list "Projects" of account "iCloud"')

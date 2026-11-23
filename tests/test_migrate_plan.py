@@ -1,6 +1,7 @@
-"""Per-task plan of migrate-assignees.py. Run: python3 selfhost/tests/test_migrate_plan.py"""
+"""Per-task plan of migrate-assignees.py. Run: python3 tests/test_migrate_plan.py"""
 import importlib.util, sys
 from pathlib import Path
+import os as _os2, tempfile as _tf2; _os2.environ.setdefault("ORQ_SITE_FILE", str(Path(_tf2.mkdtemp()) / "orq-site.json"))  # never the real site file
 
 HERE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(HERE))

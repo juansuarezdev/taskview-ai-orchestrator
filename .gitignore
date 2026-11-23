@@ -22,3 +22,8 @@ __pycache__/
 grokbot/
 mac-notifier/*.app/
 .DS_Store
+
+# Site-specific settings and prompts (templates in examples/)
+orq-site.json
+ai-supervisor-prompt.md
+.opencode-fallback-exclude

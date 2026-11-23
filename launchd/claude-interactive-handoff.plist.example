@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>Label</key><string>com.example.claude-interactive-handoff</string>
+<key>Label</key><string>__LABEL_PREFIX__.claude-interactive-handoff</string>
 <key>ProgramArguments</key><array>
   <string>/usr/bin/python3</string>
   <string>__ORQ_DIR__/claude-interactive-handoff.py</string>

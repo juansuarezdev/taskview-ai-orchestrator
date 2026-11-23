@@ -19,14 +19,9 @@
     "review": 2
   },
   "merge_to_main_repos": [
-    "repo-b",
-    "repo-n",
-    "repo-s",
-    "repo-v"
+    "my-app"
   ],
   "disabled_boards": [],
-  "priority_projects": [
-    32
-  ],
+  "priority_projects": [],
   "priority_tasks": []
 }
