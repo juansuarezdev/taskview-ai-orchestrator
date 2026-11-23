@@ -2,6 +2,7 @@
 # Restores the latest DB backup into a throwaway Postgres and compares row counts with the live DB.
 # Exit 0 = the backup restores and matches (counts may differ by what changed since the dump, but never be empty).
 set -u
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 DIR="$HOME/Backups/taskview"
 LATEST=$(ls -1t "$DIR"/taskview-*.sql.gz 2>/dev/null | head -1)
 [ -n "$LATEST" ] || { echo "FAIL no backup"; exit 1; }

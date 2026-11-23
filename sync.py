@@ -18,6 +18,7 @@ REPO_BOARDS = {"repo-m": "Board M", "repo-g": "Board G", "repo-e": "Board E",
                "taskview-community": "TaskView", "repo-tm": "TaskView"}
 KIND_COLORS = {"issue": "#f59e0b", "pr": "#3b82f6"}
 REMINDER_PREFIX = "TaskView: "
+REMINDERS_SYNC = False  # set True to create "TaskView: …" reminders for tasks with a deadline again
 
 
 def creds():
@@ -87,7 +88,9 @@ def main():
                     api("PATCH", "/module/tasks", {"id": t["id"], "complete": True, "statusId": done_status[t["goalId"]]})
                     print("closed", it["url"])
 
-    # 2. Reminders (iCloud only)
+    # 2. Reminders (iCloud only) — disabled 2026-11-23 at the owner's request: projects live in TaskView, not Reminders.
+    if not REMINDERS_SYNC:
+        return
     have = sh("osascript", "-e", 'tell application "Reminders" to get name of every reminder of list "Projects" of account "iCloud"')
     if have == "" and "Projects" not in sh("osascript", "-e", 'tell application "Reminders" to get name of every list of account "iCloud"'):
         print("iCloud list 'Projects' not found; skipping reminders")

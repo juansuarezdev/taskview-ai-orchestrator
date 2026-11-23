@@ -41,6 +41,37 @@ BOARD_BASE = {"repo-b": "ai/t382", "repo-v": "ai/t394"}
 MERGE_TO_MAIN_REPOS = {"repo-b", "repo-v", "repo-n", "repo-s"}  # repo-n: Project Board N (directiva autónoma de the owner, 15 nov 21:28)
 # Test command run on main before pushing (default `npm test`). repo-n is Swift: scripts/test.sh = swift test of AppCore (+ xcodebuild if present).
 MAIN_TEST_CMD = {"repo-n": ["bash", "scripts/test.sh"]}
+# repo-s (the owner, 21 nov 2026): Laravel in app/, no root package.json. Pest via the sail-8.5/app image, as the
+# SP-498/SP-499 reviews did. The tests run on a `git archive HEAD:app` copy in /private/tmp (vendor/ and .env are
+# gitignored, and a failed run must not leave untracked files in the main checkout): composer install (persistent
+# cache) + php artisan test with a throwaway APP_KEY. Nothing is written to the principal checkout.
+LARAVEL_DOCKER_TEST = {"repo-s": "app"}
+COMPOSER_CACHE = Path.home() / ".cache/ai-dispatch-composer"
+
+
+def main_test_cmd(repo_dir):
+    """Test command for main before pushing, or None when the repo has nothing to run (no root package.json)."""
+    name = repo_dir.name
+    if name in MAIN_TEST_CMD:
+        return MAIN_TEST_CMD[name]
+    sub = LARAVEL_DOCKER_TEST.get(name)
+    if sub is not None and (repo_dir / sub / "artisan").exists():
+        import base64, secrets, tempfile
+        tmp = Path(tempfile.mkdtemp(prefix=f"ai-main-test-{name}-", dir="/private/tmp"))
+        arch = subprocess.run(f"git -C '{repo_dir}' archive HEAD {sub} | tar -x -C '{tmp}'", shell=True, capture_output=True, text=True, timeout=120)
+        if arch.returncode != 0:
+            return ["sh", "-c", f"echo 'git archive falló: {arch.stderr.strip()[:200]}' >&2; exit 1"]
+        COMPOSER_CACHE.mkdir(parents=True, exist_ok=True)
+        uid = f"{os.getuid()}:{os.getgid()}"
+        key = "base64:" + base64.b64encode(secrets.token_bytes(32)).decode()
+        return ["docker", "run", "--rm", "--user", uid, "-e", "HOME=/tmp", "-e", "COMPOSER_HOME=/tmp/c",
+                "-e", "COMPOSER_CACHE_DIR=/composer-cache", "-e", f"APP_KEY={key}",
+                "-v", f"{COMPOSER_CACHE}:/composer-cache", "-v", f"{tmp / sub}:/app", "-w", "/app",
+                "--entrypoint", "sh", "sail-8.5/app:latest", "-c",
+                "{ [ -f .env ] || cp .env.example .env; } && composer install --no-interaction --no-progress --prefer-dist -q && php artisan test --colors=never"]
+    if (repo_dir / "package.json").exists():
+        return ["npm", "test"]
+    return None
 NPM_TEST_TIMEOUT = 15 * 60  # repo-v e2e included
 
 
@@ -116,7 +147,53 @@ def _bash_rules(cmds):
 
 
 ALLOWED = ["Read", "Glob", "Grep", "Edit", "Write", *_bash_rules(_ALLOWED_BASH)]
+# the owner, 20 nov 2026 23:01 : Board S runs everything in Docker (Laravel/Sail, Playwright captures), so its
+# sessions may use docker; scoped to that repo only (its checkout and its .ai-worktrees/repo-s-t<N> worktrees).
+REPO_EXTRA_BASH = {"repo-s": ["docker run", "docker compose", "docker ps", "docker images", "docker logs", "docker exec",
+                                     "docker build", "docker pull", "docker image inspect"]}
+
+
+# the owner, 21 nov 2026 11:57 , t456: Board V sessions get full Bash inside the repo-v checkout and its
+# .ai-worktrees/repo-v-t<N> worktrees (git rm/checkout/commit, npm run check, npm test, APP_DB=... prefixes). The global
+# DENIED list still applies (rm, git push/reset/merge/rebase, curl, sudo) plus no Docker for this repo.
+REPO_BASH_ALL = {"repo-v"}
+REPO_EXTRA_DENIED = {"repo-v": ["docker", "docker-compose", "podman", "colima"]}
+
+
+def _repo_of(cwd):
+    name = Path(str(cwd)).name
+    for repo in {*REPO_EXTRA_BASH, *REPO_BASH_ALL, *REPO_EXTRA_DENIED}:
+        if name == repo or name.startswith(repo + "-t"):
+            return repo
+    return None
+
+
+def repo_extra_allowed(cwd):
+    repo = _repo_of(cwd)
+    if repo in REPO_BASH_ALL:
+        return ["Bash"]
+    if repo in REPO_EXTRA_BASH:
+        return _bash_rules(REPO_EXTRA_BASH[repo])
+    return []
+
+
+def repo_extra_denied(cwd):
+    return _bash_rules(REPO_EXTRA_DENIED.get(_repo_of(cwd), []))
+
+
+# the owner, 20 nov 2026 19:01/23:01: these goal ids are served first on every tick (before the round-robin of the rest).
+PRIORITY_PROJECTS = [32]  # 32 = Board S
 WEB = ["WebSearch", "WebFetch"]  # analysis (plan) sessions may research the web
+WEB_TASKS_FILE = Path(__file__).resolve().parent / "web-tasks.txt"  # task ids (one per line) whose exec sessions may also use the web, granted by the owner
+
+
+def web_ok(perm):
+    if perm == "plan":
+        return True
+    try:
+        return str(CURRENT_TASK).strip() in {l.split("#")[0].strip() for l in WEB_TASKS_FILE.read_text().splitlines()}
+    except OSError:
+        return False
 DENIED = _bash_rules(_DENIED_BASH)
 
 
@@ -253,7 +330,7 @@ def main():
     except (OSError, ValueError, StopIteration):
         pass
     first = priority_goals(api)
-    goals = sorted(goals, key=lambda x: 0 if x["id"] in first else 1)  # stable: boards of priority cards first, rest keep the rotation
+    goals = sorted(goals, key=lambda x: 0 if x["id"] in first else 1 if x["id"] in PRIORITY_PROJECTS else 2)  # stable: priority cards' boards, priority boards, then the rotation
     for g in goals:
         repo = REPOS.get(g["name"])
         if not repo or g.get("archive"):
@@ -469,7 +546,7 @@ def ask(prompt, perm, model, mode, cwd, agents=None, schema=None, resume=None, b
     try:
         p = subprocess.run(["claude", "-p", prompt, "--model", model, "--permission-mode", perm, "--max-budget-usd", budget or BUDGET[mode],
                             "--output-format", "stream-json", "--verbose", *extra,
-                            "--allowedTools", *ALLOWED, *(WEB if perm == "plan" else []), "--disallowedTools", *DENIED],
+                            "--allowedTools", *ALLOWED, *repo_extra_allowed(cwd), *(WEB if web_ok(perm) else []), "--disallowedTools", *DENIED, *repo_extra_denied(cwd)],
                            cwd=cwd, env={**os.environ, "PATH": f"{Path.home()}/.local/bin:{HERD_BIN}:{HIMALAYA_DIR}:{os.environ.get('PATH', '')}", "TASKVIEW_NOHOOK": "1", "TASKVIEW_TASK_ID": CURRENT_TASK, "AI_DISPATCH": "1", **RUN_ENV}, capture_output=True, text=True, timeout=timeout or TIMEOUT[mode])
     except subprocess.TimeoutExpired as e:
         record_usage(e.stdout.decode(errors="replace") if isinstance(e.stdout, bytes) else e.stdout)
@@ -1053,19 +1130,32 @@ def integrate_to_main(repo_dir, branch, tid=None):
         log(f"{label}integrar main: {branch} ya está contenida en main")
 
     env = {k: v for k, v in os.environ.items() if k not in ("APP_DB", "APP_MODEL")}
-    test_cmd = MAIN_TEST_CMD.get(repo_dir.name, ["npm", "test"])
-    tname = " ".join(test_cmd)
-    try:
-        test = subprocess.run(
-            test_cmd, cwd=str(repo_dir), capture_output=True, text=True,
-            timeout=NPM_TEST_TIMEOUT, env=env,
-        )
-    except subprocess.TimeoutExpired:
-        if not already:
-            _git(repo_dir, "reset", "--hard", "ORIG_HEAD")
-        msg = f"{label}integrar main: {tname} excedió {NPM_TEST_TIMEOUT}s; no se hace push"
-        log(msg)
-        return False, msg, False
+    env["PATH"] = f"{Path.home()}/.local/bin:/opt/homebrew/bin:/usr/local/bin:{env.get('PATH', '')}"  # docker lives in ~/.local/bin
+    test_cmd = main_test_cmd(repo_dir)
+    tname = ("php artisan test (docker sail-8.5)" if test_cmd[0] == "docker" else " ".join(test_cmd)) if test_cmd else "sin tests"
+    if test_cmd is None:
+        log(f"{label}integrar main: {repo_dir.name} sin package.json en la raíz ni comando de tests; se omite npm test")
+        test = subprocess.CompletedProcess([], 0, "", "")
+    else:
+        try:
+            test = subprocess.run(
+                test_cmd, cwd=str(repo_dir), capture_output=True, text=True,
+                timeout=NPM_TEST_TIMEOUT, env=env,
+            )
+        except subprocess.TimeoutExpired:
+            if not already:
+                _git(repo_dir, "reset", "--hard", "ORIG_HEAD")
+            msg = f"{label}integrar main: {tname} excedió {NPM_TEST_TIMEOUT}s; no se hace push"
+            log(msg)
+            return False, msg, False
+        tail = blob(test).splitlines()[-4:]
+        log(f"{label}integrar main: tests ({test_cmd[0]}) rc={test.returncode} :: {' | '.join(tail)[:400]}")
+    # main was verified clean before the merge, so tracked files modified now were rewritten by the test run itself
+    # (repo-v e2e regenerates docs/capturas/*.png): restore them so the next integration does not see a dirty main.
+    dirty = [f for f in _git(repo_dir, "diff", "--name-only").stdout.splitlines() if f.strip()]
+    if dirty:
+        _git(repo_dir, "checkout", "--", *dirty)
+        log(f"{label}integrar main: restaurados {len(dirty)} archivos reescritos por los tests")
     if test.returncode != 0:
         if not already:
             _git(repo_dir, "reset", "--hard", "ORIG_HEAD")
