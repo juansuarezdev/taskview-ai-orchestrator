@@ -123,7 +123,7 @@ flowchart LR
 ## Installation
 
 ```sh
-git clone https://github.com/juansuarezdev/taskview-orchestrator.git
+git clone https://github.com/juansuarezdev/taskview-ai-orchestrator.git
 cd taskview-orchestrator
 
 # Credentials stay local (gitignored)
